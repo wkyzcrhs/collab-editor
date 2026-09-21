@@ -1,39 +1,98 @@
+import { useEffect, useState } from 'react';
 import { useCollab } from './useCollab';
 import { Editor } from './Editor';
 
+const DOCS = [
+  { id: 'prd', icon: '📄', name: '产品需求文档', active: true },
+  { id: 'meeting', icon: '📝', name: '会议纪要', active: false },
+  { id: 'todo', icon: '✅', name: '待办清单', active: false },
+  { id: 'daily', icon: '🧠', name: '每日速记', active: false },
+];
+
 export default function App() {
   const collab = useCollab();
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    if (typeof window === 'undefined') return 'light';
+    const saved = localStorage.getItem('theme');
+    if (saved === 'dark' || saved === 'light') return saved;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((t) => (t === 'light' ? 'dark' : 'light'));
+
+  const firstLetter = (name: string) => name.replace(/^用户-/, '').slice(0, 1);
+
   return (
     <div className="app">
-      <header className="app-header">
-        <div className="title-row">
-          <span className={`conn-dot ${collab.connected ? 'on' : 'off'}`} />
-          <h1>协同编辑器 · Demo</h1>
-          <span className="doc-version">文档 v{collab.version ?? 1}</span>
+      {/* 侧边栏 */}
+      <aside className="sidebar">
+        <div className="sidebar-brand">
+          <div className="brand-logo" />
+          <span className="brand-name">Collab Docs</span>
         </div>
-        <div className="online-row">
-          <span className="online-label">在线 {collab.clients.length}</span>
-          {collab.clients.map((c) => (
-            <span key={c.clientId} className="user-pill" style={{ borderColor: c.color }}>
-              <span className="user-dot" style={{ background: c.color }} />
-              {c.name}
-              {c.clientId === collab.myId && <em className="is-me">· 我</em>}
-            </span>
-          ))}
-        </div>
-      </header>
 
-      <main className="app-main">
+        <div className="sidebar-section">
+          <div className="sidebar-section-title">工作区</div>
+          {DOCS.map((doc) => (
+            <div key={doc.id} className={`doc-item ${doc.active ? 'active' : ''}`}>
+              <span className="doc-item-icon">{doc.icon}</span>
+              <span>{doc.name}</span>
+            </div>
+          ))}
+          <div className="doc-new">+ 新建文档</div>
+        </div>
+
+        <div className="sidebar-footer">
+          <div className="presence-title">
+            <span>在线用户</span>
+            <span className="presence-count">{collab.clients.length}</span>
+          </div>
+          <div className="presence-list">
+            {collab.clients.map((c) => (
+              <div key={c.clientId} className="presence-row">
+                <div className="avatar" style={{ background: c.color }}>
+                  {firstLetter(c.name)}
+                </div>
+                <span className="presence-name">{c.name}</span>
+                {c.clientId === collab.myId && <em className="is-me-tag">· 我</em>}
+                <span className="online-dot" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </aside>
+
+      {/* 主区域 */}
+      <main className="main">
+        <div className="topbar">
+          <div className="breadcrumb">
+            <span>工作区</span>
+            <span className="breadcrumb-sep">/</span>
+            <strong>产品需求文档</strong>
+          </div>
+          <div className="topbar-right">
+            <div className="conn-status">
+              <span className={`conn-dot ${collab.connected ? '' : 'off'}`} />
+              {collab.connected ? '已连接' : '连接中…'}
+            </div>
+            <span className="version-chip">v{collab.version ?? 1}</span>
+            <button
+              className="theme-toggle"
+              onClick={toggleTheme}
+              title={theme === 'light' ? '切换到深色模式' : '切换到浅色模式'}
+            >
+              {theme === 'light' ? '🌙' : '☀️'}
+            </button>
+          </div>
+        </div>
+
         <Editor collab={collab} />
       </main>
-
-      <footer className="app-footer">
-        <p>打开两个浏览器标签页（不同窗口）即可看到实时同步：一个用户编辑，另一个立刻能看到变化。</p>
-        <p className="foot-muted">
-          已实现：WebSocket 同步 · Block 结构 · 乐观更新 + ACK · 断线重连 + 操作重试 · 块级锁 · 在线用户 · 文档版本 · Undo/Redo。
-          未实现（可继续）：光标同步 · OT/CRDT 冲突算法 · Snapshot 持久化。
-        </p>
-      </footer>
     </div>
   );
 }

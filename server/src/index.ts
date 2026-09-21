@@ -17,8 +17,14 @@ const wss = new WebSocketServer({ port: PORT });
 
 // ---- 房间状态 ----
 let blocks: Block[] = [
-  { id: 'b-init-1', text: '你好 👋 这是协同编辑 Demo' },
-  { id: 'b-init-2', text: '点击任意块开始编辑：会自动锁定该块，其他在线用户会看到' },
+  { id: 'b-init-1', kind: 'heading1', text: '欢迎使用协同编辑器 👋' },
+  { id: 'b-init-2', kind: 'paragraph', text: '这是一个轻量级的 Block-based 协同编辑 Demo，支持多人实时同步。' },
+  { id: 'b-init-3', kind: 'heading2', text: '核心特性' },
+  { id: 'b-init-4', kind: 'bullet', text: 'WebSocket 实时同步，毫秒级延迟' },
+  { id: 'b-init-5', kind: 'bullet', text: '乐观更新 + ACK 确认，流畅又可靠' },
+  { id: 'b-init-6', kind: 'bullet', text: '块级锁机制，防止并发冲突' },
+  { id: 'b-init-7', kind: 'quote', text: '提示：打开两个浏览器窗口，试试两边同时编辑不同的块。' },
+  { id: 'b-init-8', kind: 'paragraph', text: '' },
 ];
 let version = 1;
 const appliedOpVersions = new Map<string, number>(); // opId -> 生效时的版本（幂等去重）

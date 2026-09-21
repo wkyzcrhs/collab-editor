@@ -3,23 +3,28 @@
  * 两边都通过相对路径 import 这份文件，保证类型一致。
  */
 
+/** 块类型：正文 / 一级标题 / 二级标题 / 无序列表项 / 引用 */
+export type BlockKind = 'paragraph' | 'heading1' | 'heading2' | 'bullet' | 'quote';
+
 export interface Block {
   id: string;
+  kind: BlockKind;
   text: string;
 }
 
-export type OpType = 'replaceText' | 'addBlock' | 'removeBlock';
+export type OpType = 'replaceText' | 'addBlock' | 'removeBlock' | 'changeBlockKind';
 
 export interface Op {
   id: string; // 客户端生成的唯一操作 ID，服务端用于去重（幂等）
   clientId: string;
   seq: number; // 每个客户端的本地操作序号
   type: OpType;
-  blockId: string; // replaceText/removeBlock 目标块；addBlock 时为新块 id
+  blockId: string; // replaceText/removeBlock/changeBlockKind 目标块；addBlock 时为新块 id
   start?: number; // replaceText: 替换区间起点
   end?: number; // replaceText: 替换区间终点（含）
-  text?: string; // replaceText: 新文本
+  text?: string; // replaceText / addBlock: 文本内容
   pos?: number; // addBlock: 插入位置
+  kind?: BlockKind; // changeBlockKind / addBlock: 块类型
 }
 
 /** 一次快照，客户端收到后整体替换本地文档 */

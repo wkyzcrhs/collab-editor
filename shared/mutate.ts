@@ -2,7 +2,7 @@
  * 对文档块列表应用一个操作，返回新的块数组（不可变）。
  * 客户端用来做「乐观更新」，服务端用来实际落库，保证语义一致。
  */
-import type { Block, Op } from './protocol';
+import type { Block, BlockKind, Op } from './protocol';
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
@@ -19,7 +19,8 @@ export function applyOp(blocks: Block[], op: Op): Block[] {
       return blocks.map((b) => (b.id === op.blockId ? { ...b, text } : b));
     }
     case 'addBlock': {
-      const block: Block = { id: op.blockId, text: op.text ?? '' };
+      const kind: BlockKind = (op.kind as BlockKind) ?? 'paragraph';
+      const block: Block = { id: op.blockId, kind, text: op.text ?? '' };
       const pos = clamp(op.pos ?? blocks.length, 0, blocks.length);
       const next = [...blocks];
       next.splice(pos, 0, block);
@@ -27,6 +28,13 @@ export function applyOp(blocks: Block[], op: Op): Block[] {
     }
     case 'removeBlock': {
       return blocks.filter((b) => b.id !== op.blockId);
+    }
+    case 'changeBlockKind': {
+      const kind = op.kind;
+      if (!kind) return blocks;
+      const exists = blocks.some((b) => b.id === op.blockId);
+      if (!exists) return blocks;
+      return blocks.map((b) => (b.id === op.blockId ? { ...b, kind } : b));
     }
     default:
       return blocks;
