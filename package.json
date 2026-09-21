@@ -1,0 +1,14 @@
+{
+  "name": "collab-editor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "基于 DOM 的简单协同编辑器（React + Node/WS）",
+  "scripts": {
+    "install:all": "npm --prefix server install && npm --prefix client install",
+    "dev": "concurrently -n server,client -c blue,green \"npm --prefix server run dev\" \"npm --prefix client run dev\"",
+    "build:client": "npm --prefix client run build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
