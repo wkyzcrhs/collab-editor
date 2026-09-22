@@ -1,70 +1,105 @@
 # 协同编辑器 · Demo
 
-面向「面试作品：基于 DOM 的简单协同编辑器」的入门友好参考实现。技术栈：
+面向「面试作品：基于 DOM 的简单协同编辑器」的入门友好参考实现（第二版）。
 
-- **前端**：React + TypeScript + Vite
-- **后端**：Node.js + `tsx` + `ws`（WebSocket）
-- **共享**：前后端共用 `shared/` 下的协议与块操作逻辑
+技术栈：
+- 前端：React + TypeScript + Vite
+- 后端：Node.js + tsx + ws（WebSocket）
+- 协同：Yjs（CRDT）+ y-protocols + y-websocket 协议
+- UI：类 Notion 风格侧边栏 / 工具栏 / 深色模式 / 5 种块类型
 
-开放两个浏览器标签页即可体验实时同步。
+> 演进版本：v1（块锁 + 手写协议）→ **v2（块级 CRDT）** → v3（字符级 CRDT，计划中）
+> 查看全部版本：[Tags](https://github.com/wkyzcrhs/collab-editor/tags)
 
 ## 快速开始
 
 ```bash
-# 1. 安装依赖（根目录 + server + client）
+# 1. 安装依赖
 npm run install:all
 
 # 2. 同时启动 后端(:8787) 与 前端(:5173)
 npm run dev
 
-# 3. 打开
-#    http://localhost:5173   ← 再开一个窗口，即可两浏览器同步
+# 3. 打开两个浏览器窗口
+#    http://localhost:5173
 ```
 
 手动分开跑：
 
 ```bash
-npm --prefix server run dev   # ws://localhost:8787
-npm --prefix client run dev   # http://localhost:5173
+npm --prefix server run start  # ws://localhost:8787
+npm --prefix client run dev    # http://localhost:5173
 ```
 
-## 已实现功能（对照题目 + 加分项清单）
+**手机 / 局域网访问**：前端默认监听所有地址，启动后用 `Network` 那个 IP 访问（如 `http://192.168.1.7:5173`），WebSocket 地址自动跟随页面域名。
+
+## 已实现功能（对照题目加分项）
 
 | 板块 | 状态 | 说明 |
-| --- | --- | --- |
-| WebSocket 同步 | ✅ | 文档状态增量广播（`state` 消息） |
-| Block / Block ID | ✅ | 每块唯一 ID，操作按块定位 |
-| 乐观更新 | ✅ | 本地立即生效，不等服务端确认 |
-| ACK | ✅ | 服务端确认，客户端确认后才出队下一条 |
-| 断线重连 | ✅ | 指数退避自动重连 |
-| 操作重试 | ✅ | 未确认操作周期性重发，服务端按 opId 幂等去重 |
-| Block 锁 | ✅ | 聚焦自动上锁，他人按块只读；失焦/删除自动释放 |
-| 在线用户 | ✅ | presence 实时名单 + 每人配色 |
-| 文档版本 | ✅ | 服务端维护版本号，随每次操作递增 |
-| Undo / Redo | ✅ | 基于 before/after 的本地历史，经操作回放同步 |
-| 冲突处理 | ⚠️ 简化 | 块级锁防并发 + 最后写入生效；未用 OT/CRDT |
-| Snapshot 持久化 | ❌ | 内存态；可扩展为快照 + 操作日志落库 |
-| 用户光标 | ❌ | 可继续扩展（presence 已具备命名/配色基础） |
+|---|---|---|
+| WebSocket 同步 | ✅ | Yjs sync + update 协议，增量同步 |
+| Block / Block ID | ✅ | 每块唯一 ID，块级共享数组 |
+| 乐观更新 | ✅ | 本地立即生效，Yjs 后台同步 |
+| ACK | ⚠️ 不再需要 | CRDT 最终一致 + 幂等，不需要 ACK 队列 |
+| 断线重连 | ✅ | y-websocket 内置自动重连 |
+| 操作重试 | ⚠️ 不再需要 | update 消息幂等，重复收到无副作用 |
+| Block 锁 | ❌ 已移除 | CRDT 无冲突，不需要锁 |
+| 在线用户 | ✅ | Yjs Awareness 协议 |
+| 文档版本 | ✅ | 操作累计计数（近似版本号） |
+| Undo / Redo | ✅ | Y.UndoManager |
+| 冲突处理 | ✅ 块级 CRDT | 不同块完全无冲突；同一块为整块替换（见已知问题） |
+| Snapshot 持久化 | ❌ | 内存态 |
+| 用户光标 | ❌ | 可基于 Awareness + RelativePosition 扩展 |
+| 字符级 CRDT | ❌ 计划中 | 下一站：将 block.text 升级为 Y.Text |
+
+## 已知问题
+
+当前版本为**块级 CRDT**：Block 是 Y.Array 中的共享对象，但每个块的 `text` 仍是普通字符串，修改时整块替换。
+
+因此**两个人同时编辑同一块**会出现重复块——因为"删旧块 + 插新块"是两个 CRDT 操作，双方操作都会被保留。这是块级 CRDT 的天然局限，也是升级到字符级 CRDT（Y.Text）的动机。
+
+> 这是有意为之的中间版本，用于对比和理解 CRDT 的"粒度"问题。详见版本演进。
+
+## 版本演进
+
+| 版本 | Tag | 核心方案 | 特点 |
+|---|---|---|---|
+| v1 | `v1-block-lock` | 块锁 + 手写协议（乐观更新/ACK/重试/幂等） | 传统方案，易理解 |
+| **v2** | **`v2-crdt-block`** | **块级 CRDT（Yjs）** | **去掉锁，但粒度仍为块** |
+| v3 | 计划中 | 字符级 CRDT（Y.Text） | 真正的无冲突合并 |
 
 ## 目录结构
 
 ```
 collab-editor/
-├─ package.json          # 根： concurrently 一键启动
-├─ shared/
-│  ├─ protocol.ts        # 前后端共享的消息类型协议
-│  └─ mutate.ts          # 块操作应用逻辑（幂等/一致语义）
+├─ package.json          # 根：concurrently 一键启动
+├─ shared/               # 前后端共享的类型
+│  └─ types.ts
 ├─ server/
-│  └─ src/index.ts       # ws 服务端：同步/锁/在线名单/版本
+│  └─ src/index.ts       # ws 服务端：Yjs 同步协议 + Awareness
 └─ client/
    └─ src/
-      ├─ useCollab.ts    # 核心 hook：连接/乐观/ACK/重试/重连
-      ├─ Editor.tsx      # 块编辑区 + 锁 + 撤销
-      └─ App.tsx         # 头部（在线/版本）+ 页脚说明
+      ├─ useYjsDoc.ts    # 核心 hook：Y.Doc + WebsocketProvider + Awareness
+      ├─ Editor.tsx      # 块编辑区 / 工具栏 / 块操作
+      ├─ App.tsx         # 侧边栏 / 顶栏 / 状态栏 / 深色模式
+      └─ index.css       # 样式（浅色 + 深色主题）
 ```
 
 ## 关键设计说明
 
-- **可靠性是「按序队列 + ACK + 重试 + 幂等」**，而不是 OT。对这道题足够：块锁把"同一块并发编辑"挡在门外，少量并发由最后写入兜底。
-- **要真正做加分项里的强一致协作**（多人同一块同时编辑不丢字），建议再引入 CRDT（如 [Yjs](https://github.com/yjs/yjs)）替换 replaceText 整段替换、或实现 OT。
-- 服务端是内存态、单房间；多文档/持久化可在 `server/src/index.ts` 的 `blocks/version` 处扩展，配合 PostgreSQL/Redis 与 Snapshot。
+**为什么选 CRDT 而不是 OT？**  CRDT 天然支持离线编辑、不需要中央服务器做转换、开源库 Yjs 非常成熟。OT 需要中心化服务端做操作转换，且操作类型越多转换规则越复杂。现在的行业趋势（Figma / Notion / 飞书文档）都在向 CRDT 演进。
+
+**为什么当前是块级而不是字符级？**  这是演进过程中的一步。先用 Block 结构快速跑通 CRDT 的整体流程（同步、Awareness、Undo/Redo），再深入到字符级。块级 CRDT 暴露出来的"同一块并发重复"问题，正是升级到 Y.Text 的理由——有问题、有动机、有解法，完整的思考链条比直接上 Y.Text 更有价值。
+
+## 继续开发方向
+
+按优先级：
+1. **字符级 CRDT**：将 `block.text` 从字符串换成 `Y.Text`，解决同一块并发问题
+2. **光标同步**：Y.RelativePosition + Awareness，显示远程光标
+3. **服务端持久化**：LevelDB / SQLite 存储 Y.Doc 状态
+4. **版本快照**：Y.Snapshot 实现版本回退
+5. **离线编辑**：y-indexeddb 本地缓存
+
+## License
+
+MIT

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useCollab } from './useCollab';
+import { useYjsDoc } from './useYjsDoc';
 import { Editor } from './Editor';
 
 const DOCS = [
@@ -10,7 +10,7 @@ const DOCS = [
 ];
 
 export default function App() {
-  const collab = useCollab();
+  const collab = useYjsDoc('default');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     if (typeof window === 'undefined') return 'light';
     const saved = localStorage.getItem('theme');
@@ -80,7 +80,7 @@ export default function App() {
               <span className={`conn-dot ${collab.connected ? '' : 'off'}`} />
               {collab.connected ? '已连接' : '连接中…'}
             </div>
-            <span className="version-chip">v{collab.version ?? 1}</span>
+            <span className="version-chip">v{collab.version}</span>
             <button
               className="theme-toggle"
               onClick={toggleTheme}

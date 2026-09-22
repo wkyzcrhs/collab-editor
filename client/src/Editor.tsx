@@ -1,14 +1,8 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { Block, BlockKind } from '../../shared/protocol';
-import type { useCollab } from './useCollab';
+import type { useYjsDoc } from './useYjsDoc';
 
-type Collab = ReturnType<typeof useCollab>;
-
-interface HistoryEntry {
-  blockId: string;
-  before: string;
-  after: string;
-}
+type Collab = ReturnType<typeof useYjsDoc>;
 
 const BLOCK_KINDS: { kind: BlockKind; label: string; icon: string }[] = [
   { kind: 'paragraph', label: '正文', icon: '¶' },
@@ -23,65 +17,44 @@ interface EditorProps {
 }
 
 export function Editor({ collab }: EditorProps) {
-  const { blocks, locks, myId, applyLocalOp, requestLock } = collab;
+  const { blocks, updateBlockText, addBlock, removeBlock, changeBlockKind, undo, redo } = collab;
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
-  const undoRef = useRef<HistoryEntry[]>([]);
-  const redoRef = useRef<HistoryEntry[]>([]);
 
-  const lockedByOther = useCallback(
-    (blockId: string) => !!locks[blockId] && locks[blockId] !== myId,
-    [locks, myId]
-  );
-  const lockedByMe = useCallback(
-    (blockId: string) => locks[blockId] === myId,
-    [locks, myId]
-  );
+  // 当前正在编辑的块（用来让工具栏知道该改哪个块的类型）
+  const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
 
   const onEdit = useCallback(
-    (prev: string, blockId: string, next: string) => {
-      undoRef.current.push({ blockId, before: prev, after: next });
-      redoRef.current = [];
-      applyLocalOp({ type: 'replaceText', blockId, start: 0, end: prev.length, text: next });
+    (blockId: string, next: string) => {
+      updateBlockText(blockId, next);
     },
-    [applyLocalOp]
+    [updateBlockText]
   );
 
-  const onUndo = useCallback(() => {
-    const entry = undoRef.current.pop();
-    if (!entry) return;
-    redoRef.current.push(entry);
-    applyLocalOp({ type: 'replaceText', blockId: entry.blockId, start: 0, end: entry.after.length, text: entry.before });
-  }, [applyLocalOp]);
-
-  const onRedo = useCallback(() => {
-    const entry = redoRef.current.pop();
-    if (!entry) return;
-    undoRef.current.push(entry);
-    applyLocalOp({ type: 'replaceText', blockId: entry.blockId, start: 0, end: entry.before.length, text: entry.after });
-  }, [applyLocalOp]);
-
   const onAddBlock = useCallback(() => {
-    const id = `b-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-    applyLocalOp({ type: 'addBlock', blockId: id, pos: blocks.length, kind: 'paragraph', text: '' });
-    requestLock(id, true);
-  }, [applyLocalOp, blocks.length, requestLock]);
+    addBlock(undefined, 'paragraph');
+  }, [addBlock]);
 
   const onRemoveBlock = useCallback(
     (blockId: string) => {
-      if (lockedByOther(blockId)) return;
-      applyLocalOp({ type: 'removeBlock', blockId });
-      requestLock(blockId, false);
+      removeBlock(blockId);
     },
-    [applyLocalOp, lockedByOther, requestLock]
+    [removeBlock]
   );
 
   const onChangeKind = useCallback(
     (blockId: string, kind: BlockKind) => {
-      applyLocalOp({ type: 'changeBlockKind', blockId, kind });
+      changeBlockKind(blockId, kind);
       setMenuOpen(null);
     },
-    [applyLocalOp]
+    [changeBlockKind]
   );
+
+  // 工具栏：改变当前激活块的类型
+  const setActiveKind = (kind: BlockKind) => {
+    if (activeBlockId) {
+      onChangeKind(activeBlockId, kind);
+    }
+  };
 
   // 字数统计
   const wordCount = blocks.reduce((sum, b) => sum + b.text.length, 0);
@@ -94,20 +67,14 @@ export function Editor({ collab }: EditorProps) {
           <button
             className="tb-btn"
             title="一级标题"
-            onClick={() => {
-              const first = blocks.find((b) => lockedByMe(b.id));
-              if (first) onChangeKind(first.id, 'heading1');
-            }}
+            onClick={() => setActiveKind('heading1')}
           >
             H1
           </button>
           <button
             className="tb-btn"
             title="二级标题"
-            onClick={() => {
-              const first = blocks.find((b) => lockedByMe(b.id));
-              if (first) onChangeKind(first.id, 'heading2');
-            }}
+            onClick={() => setActiveKind('heading2')}
           >
             H2
           </button>
@@ -115,39 +82,30 @@ export function Editor({ collab }: EditorProps) {
           <button
             className="tb-btn"
             title="正文"
-            onClick={() => {
-              const first = blocks.find((b) => lockedByMe(b.id));
-              if (first) onChangeKind(first.id, 'paragraph');
-            }}
+            onClick={() => setActiveKind('paragraph')}
           >
             ¶
           </button>
           <button
             className="tb-btn"
             title="无序列表"
-            onClick={() => {
-              const first = blocks.find((b) => lockedByMe(b.id));
-              if (first) onChangeKind(first.id, 'bullet');
-            }}
+            onClick={() => setActiveKind('bullet')}
           >
             •
           </button>
           <button
             className="tb-btn"
             title="引用"
-            onClick={() => {
-              const first = blocks.find((b) => lockedByMe(b.id));
-              if (first) onChangeKind(first.id, 'quote');
-            }}
+            onClick={() => setActiveKind('quote')}
           >
             ❝
           </button>
         </div>
         <div className="tb-right">
-          <button className="tb-btn" title="撤销" onClick={onUndo}>
+          <button className="tb-btn" title="撤销 (Ctrl+Z)" onClick={undo}>
             ↶
           </button>
-          <button className="tb-btn" title="重做" onClick={onRedo}>
+          <button className="tb-btn" title="重做 (Ctrl+Y)" onClick={redo}>
             ↷
           </button>
         </div>
@@ -161,16 +119,12 @@ export function Editor({ collab }: EditorProps) {
           </div>
 
           {blocks.map((block: Block) => {
-            const isLockedOther = lockedByOther(block.id);
-            const isLockedMe = lockedByMe(block.id);
             const showMenu = menuOpen === block.id;
 
             return (
               <div
                 key={block.id}
-                className={`block kind-${block.kind} ${isLockedOther ? 'block-locked-other' : ''} ${
-                  isLockedMe ? 'block-locked-me' : ''
-                }`}
+                className={`block kind-${block.kind}`}
               >
                 <div
                   className="block-handle"
@@ -199,27 +153,27 @@ export function Editor({ collab }: EditorProps) {
                   className="block-content"
                   rows={Math.max(1, block.text.split('\n').length)}
                   value={block.text}
-                  readOnly={isLockedOther}
-                  placeholder={block.kind === 'heading1' ? '一级标题' : block.kind === 'heading2' ? '二级标题' : block.kind === 'quote' ? '引用…' : block.kind === 'bullet' ? '列表项' : "输入 '/' 使用命令"}
-                  onFocus={() => requestLock(block.id, true)}
-                  onBlur={() => {
-                    if (lockedByMe(block.id)) requestLock(block.id, false);
-                  }}
+                  placeholder={
+                    block.kind === 'heading1'
+                      ? '一级标题'
+                      : block.kind === 'heading2'
+                      ? '二级标题'
+                      : block.kind === 'quote'
+                      ? '引用…'
+                      : block.kind === 'bullet'
+                      ? '列表项'
+                      : "输入 '/' 使用命令"
+                  }
+                  onFocus={() => setActiveBlockId(block.id)}
                   onChange={(e) => {
-                    if (isLockedOther) return;
-                    const prev = block.text;
                     const next = e.target.value;
-                    if (prev === next) return;
-                    onEdit(prev, block.id, next);
+                    if (block.text === next) return;
+                    onEdit(block.id, next);
                   }}
                 />
 
-                {isLockedOther && <span className="block-lock-badge">🔒 他人编辑中</span>}
-                {isLockedMe && <span className="block-lock-badge" style={{ background: 'var(--brand-soft)', color: 'var(--brand-text)' }}>✏️ 编辑中</span>}
-
                 <button
                   className="block-delete-btn"
-                  disabled={isLockedOther}
                   onClick={() => onRemoveBlock(block.id)}
                   title="删除此块"
                 >
@@ -240,7 +194,7 @@ export function Editor({ collab }: EditorProps) {
 
       {/* 底部状态栏 */}
       <div className="status-bar">
-        <div className="status-item">就绪</div>
+        <div className="status-item">就绪 · CRDT 实时协同</div>
         <div className="status-right">
           <div className="status-item">{blocks.length} 块</div>
           <div className="status-item">{wordCount} 字</div>
