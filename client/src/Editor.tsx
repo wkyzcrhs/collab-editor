@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useRef, useEffect } from 'react';
 import type { Block, BlockKind } from '../../shared/protocol';
 import type { useYjsDoc } from './useYjsDoc';
 
@@ -20,15 +20,110 @@ export function Editor({ collab }: EditorProps) {
   const { blocks, updateBlockText, addBlock, removeBlock, changeBlockKind, undo, redo } = collab;
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
 
-  // 当前正在编辑的块（用来让工具栏知道该改哪个块的类型）
-  const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
+  // 当前正在编辑的块（用 ref 避免 state 异步延迟）
+  // 工具栏按钮点击时需要同步拿到最新的 blockId
+  const activeBlockIdRef = useRef<string | null>(null);
 
+  // 输入法 composition 状态
+  // composition 期间只更新本地 textarea，不同步到 Yjs
+  // 防止拼音中间态被记录进 UndoManager 历史
+  const composingRef = useRef<{ blockId: string; text: string } | null>(null);
+
+  // 保存光标位置（Yjs 更新触发 re-render 后恢复）
+  const cursorRef = useRef<{ blockId: string; start: number; end: number } | null>(null);
+  const textareaRefs = useRef<Map<string, HTMLTextAreaElement>>(new Map());
+
+  // 同步 activeBlockId 到 ref
+  const setActive = useCallback((blockId: string | null) => {
+    activeBlockIdRef.current = blockId;
+  }, []);
+
+  // ---- 光标位置恢复 ----
+  // 每次 blocks 更新后，如果当前有聚焦的块，恢复光标位置
+  useEffect(() => {
+    const saved = cursorRef.current;
+    if (!saved) return;
+    const ta = textareaRefs.current.get(saved.blockId);
+    if (ta && document.activeElement === ta) {
+      const maxLen = ta.value.length;
+      ta.setSelectionRange(
+        Math.min(saved.start, maxLen),
+        Math.min(saved.end, maxLen)
+      );
+    }
+  }, [blocks]);
+
+  // ---- 编辑处理 ----
   const onEdit = useCallback(
     (blockId: string, next: string) => {
+      // 输入法 composition 期间，不同步到 Yjs
+      // 只在 composition 结束时一次性同步
+      if (composingRef.current?.blockId === blockId) {
+        composingRef.current.text = next;
+        // composition 期间也要刷新光标（本地显示用）
+        return;
+      }
       updateBlockText(blockId, next);
     },
     [updateBlockText]
   );
+
+  // ---- 输入法 composition 事件 ----
+  const onCompositionStart = useCallback((blockId: string) => {
+    // 开始输入拼音，标记 composition 状态
+    const block = blocks.find((b) => b.id === blockId);
+    composingRef.current = {
+      blockId,
+      text: block?.text ?? '',
+    };
+  }, [blocks]);
+
+  const onCompositionEnd = useCallback((blockId: string, finalText: string) => {
+    // 拼音上屏，一次性同步到 Yjs
+    const wasComposing = composingRef.current?.blockId === blockId;
+    composingRef.current = null;
+    if (wasComposing) {
+      updateBlockText(blockId, finalText);
+    }
+  }, [updateBlockText]);
+
+  // ---- 焦点 / 光标追踪 ----
+  const onFocus = useCallback((blockId: string, e: React.FocusEvent<HTMLTextAreaElement>) => {
+    setActive(blockId);
+    cursorRef.current = {
+      blockId,
+      start: e.target.selectionStart,
+      end: e.target.selectionEnd,
+    };
+  }, [setActive]);
+
+  const onBlur = useCallback((blockId: string) => {
+    if (activeBlockIdRef.current === blockId) {
+      cursorRef.current = null;
+    }
+  }, []);
+
+  // 记录每次按键后的光标位置
+  const onKeyUp = useCallback((blockId: string, e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const ta = e.target as HTMLTextAreaElement;
+    cursorRef.current = {
+      blockId,
+      start: ta.selectionStart,
+      end: ta.selectionEnd,
+    };
+  }, []);
+
+  // 在 select 事件里也记录（鼠标选中文本时）
+  const onSelect = useCallback((blockId: string, e: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    const ta = e.target as HTMLTextAreaElement;
+    if (document.activeElement === ta) {
+      cursorRef.current = {
+        blockId,
+        start: ta.selectionStart,
+        end: ta.selectionEnd,
+      };
+    }
+  }, []);
 
   const onAddBlock = useCallback(() => {
     addBlock(undefined, 'paragraph');
@@ -51,13 +146,22 @@ export function Editor({ collab }: EditorProps) {
 
   // 工具栏：改变当前激活块的类型
   const setActiveKind = (kind: BlockKind) => {
-    if (activeBlockId) {
-      onChangeKind(activeBlockId, kind);
+    if (activeBlockIdRef.current) {
+      onChangeKind(activeBlockIdRef.current, kind);
     }
   };
 
   // 字数统计
   const wordCount = blocks.reduce((sum, b) => sum + b.text.length, 0);
+
+  // 计算 textarea 显示的 value
+  // 如果正在 composition 且是当前块，显示本地草稿（中间态不通过 Yjs）
+  const getTextareaValue = (block: Block) => {
+    if (composingRef.current?.blockId === block.id) {
+      return composingRef.current.text;
+    }
+    return block.text;
+  };
 
   return (
     <>
@@ -120,6 +224,7 @@ export function Editor({ collab }: EditorProps) {
 
           {blocks.map((block: Block) => {
             const showMenu = menuOpen === block.id;
+            const value = getTextareaValue(block);
 
             return (
               <div
@@ -150,9 +255,16 @@ export function Editor({ collab }: EditorProps) {
                 )}
 
                 <textarea
+                  ref={(el) => {
+                    if (el) {
+                      textareaRefs.current.set(block.id, el);
+                    } else {
+                      textareaRefs.current.delete(block.id);
+                    }
+                  }}
                   className="block-content"
-                  rows={Math.max(1, block.text.split('\n').length)}
-                  value={block.text}
+                  rows={Math.max(1, value.split('\n').length)}
+                  value={value}
                   placeholder={
                     block.kind === 'heading1'
                       ? '一级标题'
@@ -164,10 +276,21 @@ export function Editor({ collab }: EditorProps) {
                       ? '列表项'
                       : "输入 '/' 使用命令"
                   }
-                  onFocus={() => setActiveBlockId(block.id)}
+                  onFocus={(e) => onFocus(block.id, e)}
+                  onBlur={() => onBlur(block.id)}
+                  onKeyUp={(e) => onKeyUp(block.id, e)}
+                  onSelect={(e) => onSelect(block.id, e)}
+                  onCompositionStart={() => onCompositionStart(block.id)}
+                  onCompositionEnd={(e) => onCompositionEnd(block.id, e.currentTarget.value)}
                   onChange={(e) => {
                     const next = e.target.value;
-                    if (block.text === next) return;
+                    // 实时记录光标位置
+                    cursorRef.current = {
+                      blockId: block.id,
+                      start: e.target.selectionStart,
+                      end: e.target.selectionEnd,
+                    };
+                    if (block.text === next && composingRef.current?.blockId !== block.id) return;
                     onEdit(block.id, next);
                   }}
                 />

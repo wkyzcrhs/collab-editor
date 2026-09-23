@@ -21,18 +21,6 @@ import type { Block, BlockKind } from '../../shared/protocol';
 // 用户颜色池
 const COLORS = ['#4B3FE3', '#27D2BF', '#F87454', '#EFAA17', '#22A5F7', '#9b5de5', '#e63946', '#2a9d8f'];
 
-// 默认初始内容（文档第一次创建时用）
-const DEFAULT_BLOCKS: Block[] = [
-  { id: 'b-init-1', kind: 'heading1', text: '欢迎使用协同编辑器 👋' },
-  { id: 'b-init-2', kind: 'paragraph', text: '这是一个基于 Yjs CRDT 的协同编辑 Demo，支持多人同时编辑同一块。' },
-  { id: 'b-init-3', kind: 'heading2', text: '核心特性' },
-  { id: 'b-init-4', kind: 'bullet', text: 'Yjs CRDT 无冲突协同，两个人可以同时改同一块' },
-  { id: 'b-init-5', kind: 'bullet', text: '毫秒级实时同步，流畅乐观更新' },
-  { id: 'b-init-6', kind: 'bullet', text: '天然支持离线编辑，上线自动合并' },
-  { id: 'b-init-7', kind: 'quote', text: '💡 提示：打开两个浏览器窗口，试试同时编辑同一段文字。' },
-  { id: 'b-init-8', kind: 'paragraph', text: '' },
-];
-
 export interface OnlineUser {
   clientId: string; // Yjs 的 clientId（数字，转成字符串）
   name: string;
@@ -161,11 +149,14 @@ export function useYjsDoc(roomName = 'default') {
     const idx = arr.findIndex((b: any) => b.id === blockId);
     if (idx === -1) return;
 
+    // 如果文本没变，直接返回（减少不必要的操作）
+    const block = arr[idx];
+    if (block.text === newText) return;
+
     // 更新数组中某一项的 text 字段
     // 注意：Y.Array 里放的是普通对象，直接赋值不行，要用 .get(i).set(...)
     // 但我们放的是 plain object，需要整体替换
     // 更规范的做法是用 Y.Map，但为了简单我们用整体替换
-    const block = arr[idx];
     yblocks.doc?.transact(() => {
       yblocks.delete(idx, 1);
       yblocks.insert(idx, [{ ...block, text: newText }]);
