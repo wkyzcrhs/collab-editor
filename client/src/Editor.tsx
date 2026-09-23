@@ -24,10 +24,10 @@ export function Editor({ collab }: EditorProps) {
   // 工具栏按钮点击时需要同步拿到最新的 blockId
   const activeBlockIdRef = useRef<string | null>(null);
 
-  // 输入法 composition 状态
+  // 输入法 composition 状态（用 state 驱动渲染）
   // composition 期间只更新本地 textarea，不同步到 Yjs
   // 防止拼音中间态被记录进 UndoManager 历史
-  const composingRef = useRef<{ blockId: string; text: string } | null>(null);
+  const [composing, setComposing] = useState<{ blockId: string; text: string } | null>(null);
 
   // 保存光标位置（Yjs 更新触发 re-render 后恢复）
   const cursorRef = useRef<{ blockId: string; start: number; end: number } | null>(null);
@@ -39,8 +39,9 @@ export function Editor({ collab }: EditorProps) {
   }, []);
 
   // ---- 光标位置恢复 ----
-  // 每次 blocks 更新后，如果当前有聚焦的块，恢复光标位置
+  // 每次 blocks 更新后，如果当前有聚焦的块且不在 composition 中，恢复光标位置
   useEffect(() => {
+    if (composing) return; // composition 期间由本地控制，不恢复
     const saved = cursorRef.current;
     if (!saved) return;
     const ta = textareaRefs.current.get(saved.blockId);
@@ -51,41 +52,39 @@ export function Editor({ collab }: EditorProps) {
         Math.min(saved.end, maxLen)
       );
     }
-  }, [blocks]);
+  }, [blocks, composing]);
 
   // ---- 编辑处理 ----
   const onEdit = useCallback(
     (blockId: string, next: string) => {
-      // 输入法 composition 期间，不同步到 Yjs
-      // 只在 composition 结束时一次性同步
-      if (composingRef.current?.blockId === blockId) {
-        composingRef.current.text = next;
-        // composition 期间也要刷新光标（本地显示用）
+      // 输入法 composition 期间，只更新本地草稿，不同步到 Yjs
+      if (composing?.blockId === blockId) {
+        setComposing({ blockId, text: next });
         return;
       }
       updateBlockText(blockId, next);
     },
-    [updateBlockText]
+    [composing, updateBlockText]
   );
 
   // ---- 输入法 composition 事件 ----
   const onCompositionStart = useCallback((blockId: string) => {
-    // 开始输入拼音，标记 composition 状态
+    // 开始输入拼音，进入 composition 模式
     const block = blocks.find((b) => b.id === blockId);
-    composingRef.current = {
+    setComposing({
       blockId,
       text: block?.text ?? '',
-    };
+    });
   }, [blocks]);
 
   const onCompositionEnd = useCallback((blockId: string, finalText: string) => {
-    // 拼音上屏，一次性同步到 Yjs
-    const wasComposing = composingRef.current?.blockId === blockId;
-    composingRef.current = null;
+    // 拼音上屏，同步到 Yjs，退出 composition 模式
+    const wasComposing = composing?.blockId === blockId;
+    setComposing(null);
     if (wasComposing) {
       updateBlockText(blockId, finalText);
     }
-  }, [updateBlockText]);
+  }, [composing, updateBlockText]);
 
   // ---- 焦点 / 光标追踪 ----
   const onFocus = useCallback((blockId: string, e: React.FocusEvent<HTMLTextAreaElement>) => {
@@ -157,8 +156,8 @@ export function Editor({ collab }: EditorProps) {
   // 计算 textarea 显示的 value
   // 如果正在 composition 且是当前块，显示本地草稿（中间态不通过 Yjs）
   const getTextareaValue = (block: Block) => {
-    if (composingRef.current?.blockId === block.id) {
-      return composingRef.current.text;
+    if (composing?.blockId === block.id) {
+      return composing.text;
     }
     return block.text;
   };
@@ -290,7 +289,7 @@ export function Editor({ collab }: EditorProps) {
                       start: e.target.selectionStart,
                       end: e.target.selectionEnd,
                     };
-                    if (block.text === next && composingRef.current?.blockId !== block.id) return;
+                    if (block.text === next && composing?.blockId !== block.id) return;
                     onEdit(block.id, next);
                   }}
                 />
