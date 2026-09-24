@@ -2,30 +2,25 @@
 
 基于 DOM 渲染的协同编辑器，从 **块锁 + 手写协议** 演进到 **CRDT（Yjs）**，完整记录思考过程与设计权衡。
 
-> 🎯 题目要求的不是"功能数量"，而是"思考过程"。这个项目的价值在于：**两个版本的对比与演进**。
+> 🎯 题目要求的不是"功能数量"，而是"思考过程"。这个项目的价值在于：**三次演进的对比与取舍**——从朴素到正确，从正确到精致。
 
 ## 演进概览
 
-| v1 朴素版（块锁）                                                                              | v2 精致版（块级 CRDT）                                                                         |
-| --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| ![v1 朴素版](docs/images/v1-naive-desktop.png)                                             | ![v2 精致版](docs/images/v2-refined-desktop.png)                                           |
-| 块锁 + 手写协议                                                                               | 块级 CRDT（Yjs）                                                                            |
-| 核心优先，UI 朴素                                                                              | 类 Notion 风格，体验升级                                                                        |
-| [`v1-block-lock`](https://github.com/wkyzcrhs/collab-editor/releases/tag/v1-block-lock) | [`v2-crdt-block`](https://github.com/wkyzcrhs/collab-editor/releases/tag/v2-crdt-block) |
+| v1 朴素版（块锁） | v2 精致版（块级 CRDT） | v3 字符级 CRDT（Y.Text） |
+|---|---|---|
+| ![v1 朴素版](docs/images/v1-naive-desktop.png) | ![v2 精致版](docs/images/v2-refined-desktop.png) | _同 v2 UI，内核升级_ |
+| 块锁 + 手写协议 | 块级 CRDT（Yjs + Y.Map） | 字符级 CRDT（Y.Text） |
+| 核心优先，UI 朴素 | 类 Notion 风格，体验升级 | 真正的无冲突合并 + 光标同步 |
+| [`v1-block-lock`](https://github.com/wkyzcrhs/collab-editor/releases/tag/v1-block-lock) | [`v2-crdt-block`](https://github.com/wkyzcrhs/collab-editor/releases/tag/v2-crdt-block) | [`v3-crdt-text`](https://github.com/wkyzcrhs/collab-editor/releases/tag/v3-crdt-text) |
 
-**v3 计划中**：字符级 CRDT（Y.Text）→ 真正的无冲突合并
-
-技术栈：0
+**技术栈**
 
 - 前端：React + TypeScript + Vite
-
 - 后端：Node.js + tsx + ws（WebSocket）
-
 - 协同 v1：手写协议（乐观更新 / ACK / 重试 / 幂等 / 重连 / 块锁）
-
-- 协同 v2：Yjs（CRDT）+ y-protocols
-
-- UI：类 Notion 风格侧边栏 / 工具栏 / 深色模式 / 5 种块类型
+- 协同 v2：Yjs（CRDT）+ y-protocols + Y.Map（块级粒度）
+- 协同 v3：Y.Text（字符级粒度）+ Y.RelativePosition 光标同步
+- UI：类 Notion 风格侧边栏 / 工具栏 / 深色模式 / 5 种块类型 / 远程用户标签
 
 ## 移动端测试
 
@@ -75,10 +70,10 @@ npm --prefix client run dev    # http://localhost:5173
 | 在线用户             | ✅         | Yjs Awareness 协议                    |
 | 文档版本             | ✅         | 操作累计计数（近似版本号）                       |
 | Undo / Redo      | ✅         | Y.UndoManager                       |
-| 冲突处理             | ✅ 块级 CRDT | 不同块完全无冲突；同一块为整块替换（见已知问题）            |
-| Snapshot 持久化     | ❌         | 内存态                                 |
-| 用户光标             | ❌         | 可基于 Awareness + RelativePosition 扩展 |
-| 字符级 CRDT         | ❌ 计划中     | 下一站：将 block.text 升级为 Y.Text         |
+| 冲突处理             | ✅ 字符级 CRDT | Y.Text 逐字符无冲突合并，两端最终一致              |
+| Snapshot 持久化     | ❌         | 内存态（可扩展 y-leveldb）                        |
+| 用户光标             | ✅         | Awareness + Y.RelativePosition，显示远程用户在哪块编辑 |
+| 字符级 CRDT         | ✅         | block.text 升级为 Y.Text，真正的无冲突合并         |
 
 ## 已知问题 · 块级 CRDT 边界测试
 
@@ -168,8 +163,8 @@ npm --prefix client run dev    # http://localhost:5173
 | 版本     | Tag                 | 核心方案                      | 特点             |
 | ------ | ------------------- | ------------------------- | -------------- |
 | v1     | `v1-block-lock`     | 块锁 + 手写协议（乐观更新/ACK/重试/幂等） | 传统方案，易理解       |
-| **v2** | **`v2-crdt-block`** | **块级 CRDT（Yjs）**          | **去掉锁，但粒度仍为块** |
-| v3     | 计划中                 | 字符级 CRDT（Y.Text）          | 真正的无冲突合并       |
+| v2     | `v2-crdt-block` | 块级 CRDT（Yjs + Y.Map）          | 去掉锁，但粒度仍为块 |
+| **v3** | **`v3-crdt-text`**  | **字符级 CRDT（Y.Text）**          | **真正的无冲突合并 + 光标同步**       |
 
 ## 目录结构
 
@@ -192,17 +187,17 @@ collab-editor/
 
 **为什么选 CRDT 而不是 OT？**  CRDT 天然支持离线编辑、不需要中央服务器做转换、开源库 Yjs 非常成熟。OT 需要中心化服务端做操作转换，且操作类型越多转换规则越复杂。现在的行业趋势（Figma / Notion / 飞书文档）都在向 CRDT 演进。
 
-**为什么当前是块级而不是字符级？**  这是演进过程中的一步。先用 Block 结构快速跑通 CRDT 的整体流程（同步、Awareness、Undo/Redo），再深入到字符级。块级 CRDT 暴露出来的"同一块并发重复"问题，正是升级到 Y.Text 的理由——有问题、有动机、有解法，完整的思考链条比直接上 Y.Text 更有价值。
+**为什么从块级升级到字符级？**  这是演进过程中的关键一步。v2 先用 Y.Map + 整块替换快速跑通 CRDT 整体流程（同步、Awareness、Undo/Redo），但暴露了"同一块并发产生重复块 / 光标不同步"等问题——这些不是 Yjs 的 bug，而是**块级粒度的天然局限**。v3 升级到 Y.Text 后，操作粒度从"整块"降到"单字符"，从根源上解决了这些问题。完整的思考链条比直接上 Y.Text 更有价值。
 
 ## 继续开发方向
 
 按优先级：
 
-1. **字符级 CRDT**：将 `block.text` 从字符串换成 `Y.Text`，解决同一块并发问题
-2. **光标同步**：Y.RelativePosition + Awareness，显示远程光标
-3. **服务端持久化**：LevelDB / SQLite 存储 Y.Doc 状态
-4. **版本快照**：Y.Snapshot 实现版本回退
-5. **离线编辑**：y-indexeddb 本地缓存
+1. **服务端持久化**：LevelDB / SQLite 存储 Y.Doc 状态（目前内存态，重启清空）
+2. **版本快照**：Y.Snapshot 实现版本回退 / 历史版本浏览
+3. **离线编辑**：y-indexeddb 本地缓存，断网继续改
+4. **富文本**：Y.Xml 支持加粗 / 斜体 / 链接等内联格式
+5. **评论 / 批注**：基于 Y.Array 的评论线程
 
 ## License
 
