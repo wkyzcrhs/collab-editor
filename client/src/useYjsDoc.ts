@@ -130,7 +130,9 @@ export function useYjsDoc(roomName = 'default') {
     provider.on('status', handleStatus);
 
     // ---- UndoManager ----
-    const undoManager = new Y.UndoManager(yblocks, {
+    // scope 设为整个 ydoc，确保 Y.Map 内部字段变化（text/kind）也能被追踪
+    // 之前 scope 是 yblocks（Y.Array），Y.Map 内部 set 不会触发 Array 变化，Undo/Redo 会失效
+    const undoManager = new Y.UndoManager(ydoc, {
       trackedOrigins: new Set([null]), // 只追踪本地用户操作
     });
     undoManagerRef.current = undoManager;
