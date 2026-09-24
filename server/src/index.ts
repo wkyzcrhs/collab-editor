@@ -28,16 +28,24 @@ const docs = new Map<string, {
   awareness: awarenessProtocol.Awareness;
 }>();
 
-// 默认初始内容
-const DEFAULT_BLOCKS = [
-  { id: 'b-init-1', kind: 'heading1', text: '欢迎使用协同编辑器 👋' },
-  { id: 'b-init-2', kind: 'paragraph', text: '这是一个基于 Yjs CRDT 的协同编辑 Demo，支持多人同时编辑同一块。' },
-  { id: 'b-init-3', kind: 'heading2', text: '核心特性' },
-  { id: 'b-init-4', kind: 'bullet', text: 'Yjs CRDT 无冲突协同，两个人可以同时改同一块' },
-  { id: 'b-init-5', kind: 'bullet', text: '毫秒级实时同步，流畅乐观更新' },
-  { id: 'b-init-6', kind: 'bullet', text: '天然支持离线编辑，上线自动合并' },
-  { id: 'b-init-7', kind: 'quote', text: '💡 提示：打开两个浏览器窗口，试试同时编辑同一段文字。' },
-  { id: 'b-init-8', kind: 'paragraph', text: '' },
+// 默认初始内容（每个块用 Y.Map，支持原地修改，不会产生重复块）
+function createBlock(id: string, kind: string, text: string): Y.Map<any> {
+  const map = new Y.Map();
+  map.set('id', id);
+  map.set('kind', kind);
+  map.set('text', text);
+  return map;
+}
+
+const DEFAULT_BLOCKS: Y.Map<any>[] = [
+  createBlock('b-init-1', 'heading1', '欢迎使用协同编辑器 👋'),
+  createBlock('b-init-2', 'paragraph', '这是一个基于 Yjs CRDT 的协同编辑 Demo，支持多人同时编辑同一块。'),
+  createBlock('b-init-3', 'heading2', '核心特性'),
+  createBlock('b-init-4', 'bullet', 'Yjs CRDT 无冲突协同，两个人可以同时改同一块'),
+  createBlock('b-init-5', 'bullet', '毫秒级实时同步，流畅乐观更新'),
+  createBlock('b-init-6', 'bullet', '天然支持离线编辑，上线自动合并'),
+  createBlock('b-init-7', 'quote', '💡 提示：打开两个浏览器窗口，试试同时编辑同一段文字。'),
+  createBlock('b-init-8', 'paragraph', ''),
 ];
 
 /** 获取或创建房间 */

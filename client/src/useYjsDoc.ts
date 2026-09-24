@@ -79,8 +79,15 @@ export function useYjsDoc(roomName = 'default') {
     });
 
     // ---- 同步 blocks 到 React state ----
+    // Y.Array 里每个元素是 Y.Map，转成普通对象给 React 用
     const syncBlocks = () => {
-      setBlocks(yblocks.toArray() as Block[]);
+      const arr = yblocks.toArray() as Y.Map<any>[];
+      const plain = arr.map((m) => ({
+        id: m.get('id'),
+        kind: m.get('kind'),
+        text: m.get('text'),
+      })) as Block[];
+      setBlocks(plain);
     };
 
     // 初次同步完成（默认内容由服务端权威初始化，客户端不塞）
@@ -94,11 +101,12 @@ export function useYjsDoc(roomName = 'default') {
     provider.on('sync', handleSync);
 
     // 监听 blocks 变化（别人改了 → 本地更新）
+    // 用 observeDeep 才能监听 Y.Map 内部字段的变化（比如 text/kind 改变）
     const handleObserve = () => {
       syncBlocks();
       bumpVersion();
     };
-    yblocks.observe(handleObserve);
+    yblocks.observeDeep(handleObserve);
 
     // ---- 在线用户（Awareness） ----
     const updateAwareness = () => {
@@ -129,7 +137,7 @@ export function useYjsDoc(roomName = 'default') {
 
     return () => {
       // 清理
-      yblocks.unobserve(handleObserve);
+      yblocks.unobserveDeep(handleObserve);
       provider.off('sync', handleSync);
       provider.off('status', handleStatus);
       provider.awareness.off('change', updateAwareness);
@@ -141,35 +149,34 @@ export function useYjsDoc(roomName = 'default') {
 
   // ---- 操作函数 ----
 
-  /** 替换某块的全部文本 */
+  /** 替换某块的全部文本（Y.Map 原地修改，不会产生重复块） */
   const updateBlockText = useCallback((blockId: string, newText: string) => {
     const yblocks = yblocksRef.current;
     if (!yblocks) return;
-    const arr = yblocks.toArray();
-    const idx = arr.findIndex((b: any) => b.id === blockId);
+    const arr = yblocks.toArray() as Y.Map<any>[];
+    const idx = arr.findIndex((m) => m.get('id') === blockId);
     if (idx === -1) return;
 
+    const ymap = arr[idx];
     // 如果文本没变，直接返回（减少不必要的操作）
-    const block = arr[idx];
-    if (block.text === newText) return;
+    if (ymap.get('text') === newText) return;
 
-    // 更新数组中某一项的 text 字段
-    // 注意：Y.Array 里放的是普通对象，直接赋值不行，要用 .get(i).set(...)
-    // 但我们放的是 plain object，需要整体替换
-    // 更规范的做法是用 Y.Map，但为了简单我们用整体替换
-    yblocks.doc?.transact(() => {
-      yblocks.delete(idx, 1);
-      yblocks.insert(idx, [{ ...block, text: newText }]);
-    });
+    // 原地修改 map 的 text 字段（不再删了又插，不会产生重复块）
+    ymap.set('text', newText);
   }, []);
 
-  /** 新增一个块 */
+  /** 新增一个块（用 Y.Map，支持原地修改） */
   const addBlock = useCallback((pos?: number, kind: BlockKind = 'paragraph') => {
     const yblocks = yblocksRef.current;
     if (!yblocks) return;
     const id = `b-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const insertPos = pos ?? yblocks.length;
-    yblocks.insert(insertPos, [{ id, kind, text: '' }]);
+    // 用 Y.Map 存块，字段可以原地修改
+    const ymap = new Y.Map<any>();
+    ymap.set('id', id);
+    ymap.set('kind', kind);
+    ymap.set('text', '');
+    yblocks.insert(insertPos, [ymap]);
     return id;
   }, []);
 
@@ -177,24 +184,22 @@ export function useYjsDoc(roomName = 'default') {
   const removeBlock = useCallback((blockId: string) => {
     const yblocks = yblocksRef.current;
     if (!yblocks) return;
-    const arr = yblocks.toArray();
-    const idx = arr.findIndex((b: any) => b.id === blockId);
+    const arr = yblocks.toArray() as Y.Map<any>[];
+    const idx = arr.findIndex((m) => m.get('id') === blockId);
     if (idx === -1) return;
     yblocks.delete(idx, 1);
   }, []);
 
-  /** 切换块类型 */
+  /** 切换块类型（Y.Map 原地修改） */
   const changeBlockKind = useCallback((blockId: string, kind: BlockKind) => {
     const yblocks = yblocksRef.current;
     if (!yblocks) return;
-    const arr = yblocks.toArray();
-    const idx = arr.findIndex((b: any) => b.id === blockId);
+    const arr = yblocks.toArray() as Y.Map<any>[];
+    const idx = arr.findIndex((m) => m.get('id') === blockId);
     if (idx === -1) return;
-    const block = arr[idx];
-    yblocks.doc?.transact(() => {
-      yblocks.delete(idx, 1);
-      yblocks.insert(idx, [{ ...block, kind }]);
-    });
+    const ymap = arr[idx];
+    if (ymap.get('kind') === kind) return;
+    ymap.set('kind', kind);
   }, []);
 
   /** 撤销 */
