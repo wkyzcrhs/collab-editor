@@ -28,12 +28,15 @@ const docs = new Map<string, {
   awareness: awarenessProtocol.Awareness;
 }>();
 
-// 默认初始内容（每个块用 Y.Map，支持原地修改，不会产生重复块）
+// 默认初始内容（v3：每个块用 Y.Map，text 字段用 Y.Text 实现字符级 CRDT）
 function createBlock(id: string, kind: string, text: string): Y.Map<any> {
   const map = new Y.Map();
   map.set('id', id);
   map.set('kind', kind);
-  map.set('text', text);
+  // text 用 Y.Text —— 字符级 CRDT，支持真正的无冲突合并
+  const ytext = new Y.Text();
+  ytext.insert(0, text);
+  map.set('text', ytext);
   return map;
 }
 

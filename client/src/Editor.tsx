@@ -1,4 +1,5 @@
 import { useCallback, useState, useRef, useEffect } from 'react';
+import * as Y from 'yjs';
 import type { Block, BlockKind } from '../../shared/protocol';
 import type { useYjsDoc } from './useYjsDoc';
 
@@ -16,45 +17,157 @@ interface EditorProps {
   collab: Collab;
 }
 
+/**
+ * 计算两段文本的差异，应用到 Y.Text
+ * 策略：找公共前缀 + 公共后缀，中间部分先删后插
+ */
+function applyDiffToYText(ytext: Y.Text, oldVal: string, newVal: string) {
+  // 公共前缀长度
+  let start = 0;
+  const minLen = Math.min(oldVal.length, newVal.length);
+  while (start < minLen && oldVal[start] === newVal[start]) {
+    start++;
+  }
+  // 公共后缀长度（从后往前找）
+  let oldEnd = oldVal.length;
+  let newEnd = newVal.length;
+  while (oldEnd > start && newEnd > start && oldVal[oldEnd - 1] === newVal[newEnd - 1]) {
+    oldEnd--;
+    newEnd--;
+  }
+  // 删除旧的中间部分
+  if (oldEnd > start) {
+    ytext.delete(start, oldEnd - start);
+  }
+  // 插入新的中间部分
+  if (newEnd > start) {
+    ytext.insert(start, newVal.slice(start, newEnd));
+  }
+}
+
 export function Editor({ collab }: EditorProps) {
-  const { blocks, updateBlockText, addBlock, removeBlock, changeBlockKind, undo, redo } = collab;
+  const {
+    blocks,
+    remoteCursors,
+    addBlock,
+    removeBlock,
+    changeBlockKind,
+    getYText,
+    updateMyCursor,
+    undo,
+    redo,
+  } = collab;
+
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
 
   // 当前正在编辑的块（用 ref 避免 state 异步延迟）
-  // 工具栏按钮点击时需要同步拿到最新的 blockId
   const activeBlockIdRef = useRef<string | null>(null);
 
   // 输入法 composition 状态（用 state 驱动渲染）
-  // composition 期间只更新本地 textarea，不同步到 Yjs
-  // 防止拼音中间态被记录进 UndoManager 历史
   const [composing, setComposing] = useState<{ blockId: string; text: string } | null>(null);
 
   // 保存光标位置（Yjs 更新触发 re-render 后恢复）
   const cursorRef = useRef<{ blockId: string; start: number; end: number } | null>(null);
   const textareaRefs = useRef<Map<string, HTMLTextAreaElement>>(new Map());
 
-  // 同步 activeBlockId 到 ref
+  // 记录每个块"上次应用到 Y.Text 的值"，用于计算 diff
+  // 防止 onChange → Y.Text 更新 → observe 触发 re-render → onChange 循环
+  const lastAppliedRef = useRef<Map<string, string>>(new Map());
+
+  // ---- 工具：广播光标位置 ----
+  const broadcastCursor = useCallback(
+    (blockId: string | null, pos: number) => {
+      if (!blockId) {
+        updateMyCursor(null, null);
+        return;
+      }
+      const ytext = getYText(blockId);
+      if (!ytext) return;
+      // 用 Y.RelativePosition 编码光标位置
+      // 即使文本有插入删除，相对位置也能保持正确
+      const relPos = Y.createRelativePositionFromTypeIndex(ytext, pos);
+      const json = JSON.stringify(relPos);
+      updateMyCursor(blockId, json);
+    },
+    [getYText, updateMyCursor]
+  );
+
+  // ---- 焦点 / 光标追踪 ----
   const setActive = useCallback((blockId: string | null) => {
     activeBlockIdRef.current = blockId;
   }, []);
 
+  const onFocus = useCallback(
+    (blockId: string, e: React.FocusEvent<HTMLTextAreaElement>) => {
+      setActive(blockId);
+      const start = e.target.selectionStart;
+      cursorRef.current = { blockId, start, end: e.target.selectionEnd };
+      broadcastCursor(blockId, start);
+    },
+    [setActive, broadcastCursor]
+  );
+
+  const onBlur = useCallback(
+    (blockId: string) => {
+      if (activeBlockIdRef.current === blockId) {
+        cursorRef.current = null;
+      }
+      // 失焦时清空光标广播
+      if (activeBlockIdRef.current === blockId) {
+        updateMyCursor(null, null);
+      }
+    },
+    [updateMyCursor]
+  );
+
+  // 记录每次按键后的光标位置并广播
+  const onKeyUp = useCallback(
+    (blockId: string, e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      const ta = e.target as HTMLTextAreaElement;
+      cursorRef.current = {
+        blockId,
+        start: ta.selectionStart,
+        end: ta.selectionEnd,
+      };
+      broadcastCursor(blockId, ta.selectionStart);
+    },
+    [broadcastCursor]
+  );
+
+  // 鼠标选中文本时也记录
+  const onSelect = useCallback(
+    (blockId: string, e: React.SyntheticEvent<HTMLTextAreaElement>) => {
+      const ta = e.target as HTMLTextAreaElement;
+      if (document.activeElement === ta) {
+        cursorRef.current = {
+          blockId,
+          start: ta.selectionStart,
+          end: ta.selectionEnd,
+        };
+        broadcastCursor(blockId, ta.selectionStart);
+      }
+    },
+    [broadcastCursor]
+  );
+
   // ---- 光标位置恢复 ----
-  // 每次 blocks 更新后，如果当前有聚焦的块且不在 composition 中，恢复光标位置
+  // Yjs 更新后，如果当前有聚焦的块且不在 composition 中，恢复光标位置
   useEffect(() => {
-    if (composing) return; // composition 期间由本地控制，不恢复
+    if (composing) return;
     const saved = cursorRef.current;
     if (!saved) return;
     const ta = textareaRefs.current.get(saved.blockId);
     if (ta && document.activeElement === ta) {
       const maxLen = ta.value.length;
-      ta.setSelectionRange(
-        Math.min(saved.start, maxLen),
-        Math.min(saved.end, maxLen)
-      );
+      const start = Math.min(saved.start, maxLen);
+      const end = Math.min(saved.end, maxLen);
+      ta.setSelectionRange(start, end);
+      // 恢复后重新广播光标位置
+      broadcastCursor(saved.blockId, start);
     }
-  }, [blocks, composing]);
+  }, [blocks, composing, broadcastCursor]);
 
-  // ---- 编辑处理 ----
+  // ---- 编辑处理（字符级，通过 diff 应用到 Y.Text） ----
   const onEdit = useCallback(
     (blockId: string, next: string) => {
       // 输入法 composition 期间，只更新本地草稿，不同步到 Yjs
@@ -62,14 +175,33 @@ export function Editor({ collab }: EditorProps) {
         setComposing({ blockId, text: next });
         return;
       }
-      updateBlockText(blockId, next);
+
+      const ytext = getYText(blockId);
+      if (!ytext) return;
+
+      const lastApplied = lastAppliedRef.current.get(blockId) ?? '';
+      // 如果和上次应用的值一样，跳过（防止 Y.Text → observe → onChange 循环）
+      if (next === lastApplied) return;
+
+      // 计算 diff 并应用到 Y.Text
+      applyDiffToYText(ytext, lastApplied, next);
+
+      // 更新"上次应用的值"
+      lastAppliedRef.current.set(blockId, next);
     },
-    [composing, updateBlockText]
+    [composing, getYText]
   );
+
+  // 同步 lastAppliedRef 与最新 blocks
+  // Y.Text 变化触发 observeDeep → setBlocks → 这里更新缓存
+  useEffect(() => {
+    for (const b of blocks) {
+      lastAppliedRef.current.set(b.id, b.text);
+    }
+  }, [blocks]);
 
   // ---- 输入法 composition 事件 ----
   const onCompositionStart = useCallback((blockId: string) => {
-    // 开始输入拼音，进入 composition 模式
     const block = blocks.find((b) => b.id === blockId);
     setComposing({
       blockId,
@@ -77,53 +209,24 @@ export function Editor({ collab }: EditorProps) {
     });
   }, [blocks]);
 
-  const onCompositionEnd = useCallback((blockId: string, finalText: string) => {
-    // 拼音上屏，同步到 Yjs，退出 composition 模式
-    const wasComposing = composing?.blockId === blockId;
-    setComposing(null);
-    if (wasComposing) {
-      updateBlockText(blockId, finalText);
-    }
-  }, [composing, updateBlockText]);
+  const onCompositionEnd = useCallback(
+    (blockId: string, finalText: string) => {
+      const wasComposing = composing?.blockId === blockId;
+      setComposing(null);
+      if (wasComposing) {
+        // 拼音上屏，计算整段差异应用到 Y.Text
+        const ytext = getYText(blockId);
+        if (ytext) {
+          const lastApplied = lastAppliedRef.current.get(blockId) ?? '';
+          applyDiffToYText(ytext, lastApplied, finalText);
+          lastAppliedRef.current.set(blockId, finalText);
+        }
+      }
+    },
+    [composing, getYText]
+  );
 
-  // ---- 焦点 / 光标追踪 ----
-  const onFocus = useCallback((blockId: string, e: React.FocusEvent<HTMLTextAreaElement>) => {
-    setActive(blockId);
-    cursorRef.current = {
-      blockId,
-      start: e.target.selectionStart,
-      end: e.target.selectionEnd,
-    };
-  }, [setActive]);
-
-  const onBlur = useCallback((blockId: string) => {
-    if (activeBlockIdRef.current === blockId) {
-      cursorRef.current = null;
-    }
-  }, []);
-
-  // 记录每次按键后的光标位置
-  const onKeyUp = useCallback((blockId: string, e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    const ta = e.target as HTMLTextAreaElement;
-    cursorRef.current = {
-      blockId,
-      start: ta.selectionStart,
-      end: ta.selectionEnd,
-    };
-  }, []);
-
-  // 在 select 事件里也记录（鼠标选中文本时）
-  const onSelect = useCallback((blockId: string, e: React.SyntheticEvent<HTMLTextAreaElement>) => {
-    const ta = e.target as HTMLTextAreaElement;
-    if (document.activeElement === ta) {
-      cursorRef.current = {
-        blockId,
-        start: ta.selectionStart,
-        end: ta.selectionEnd,
-      };
-    }
-  }, []);
-
+  // ---- 块操作 ----
   const onAddBlock = useCallback(() => {
     addBlock(undefined, 'paragraph');
   }, [addBlock]);
@@ -131,6 +234,7 @@ export function Editor({ collab }: EditorProps) {
   const onRemoveBlock = useCallback(
     (blockId: string) => {
       removeBlock(blockId);
+      lastAppliedRef.current.delete(blockId);
     },
     [removeBlock]
   );
@@ -154,12 +258,16 @@ export function Editor({ collab }: EditorProps) {
   const wordCount = blocks.reduce((sum, b) => sum + b.text.length, 0);
 
   // 计算 textarea 显示的 value
-  // 如果正在 composition 且是当前块，显示本地草稿（中间态不通过 Yjs）
   const getTextareaValue = (block: Block) => {
     if (composing?.blockId === block.id) {
       return composing.text;
     }
     return block.text;
+  };
+
+  // 某块有哪些远程用户在编辑
+  const getRemoteUsersInBlock = (blockId: string) => {
+    return remoteCursors.filter((c) => c.blockId === blockId);
   };
 
   return (
@@ -224,11 +332,17 @@ export function Editor({ collab }: EditorProps) {
           {blocks.map((block: Block) => {
             const showMenu = menuOpen === block.id;
             const value = getTextareaValue(block);
+            const remoteUsers = getRemoteUsersInBlock(block.id);
+            const hasRemoteUser = remoteUsers.length > 0;
 
             return (
               <div
                 key={block.id}
-                className={`block kind-${block.kind}`}
+                className={`block kind-${block.kind} ${hasRemoteUser ? 'has-remote' : ''}`}
+                style={hasRemoteUser ? {
+                  // 有远程用户时，左边框显示对方颜色
+                  borderLeftColor: remoteUsers[0].color,
+                } : undefined}
               >
                 <div
                   className="block-handle"
@@ -250,6 +364,13 @@ export function Editor({ collab }: EditorProps) {
                         {k.label}
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {/* 远程用户标签（显示在块右上角） */}
+                {hasRemoteUser && (
+                  <div className="remote-user-tag" style={{ backgroundColor: remoteUsers[0].color }}>
+                    {remoteUsers[0].name}
                   </div>
                 )}
 
@@ -316,7 +437,7 @@ export function Editor({ collab }: EditorProps) {
 
       {/* 底部状态栏 */}
       <div className="status-bar">
-        <div className="status-item">就绪 · CRDT 实时协同</div>
+        <div className="status-item">就绪 · 字符级 CRDT 实时协同</div>
         <div className="status-right">
           <div className="status-item">{blocks.length} 块</div>
           <div className="status-item">{wordCount} 字</div>
