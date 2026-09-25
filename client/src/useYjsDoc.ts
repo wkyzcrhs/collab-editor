@@ -16,6 +16,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
+import { IndexeddbPersistence } from 'y-indexeddb';
 import type { Block, BlockKind } from '../../shared/protocol';
 
 // 用户颜色池
@@ -57,15 +58,38 @@ export function useYjsDoc(roomName = 'default') {
 
   // ---- 初始化 Y.Doc + WebSocket 连接 ----
   useEffect(() => {
+    // sessionStorage 按标签页隔离：同一标签页刷新后身份不变，
+    // 同浏览器的其他窗口是独立用户（localStorage 会导致多窗口撞成同一人）
+    const STORAGE_KEY = 'collab-editor-client-id';
+    let storedId: number | null = null;
+    const stored = sessionStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      const n = Number(stored);
+      if (!isNaN(n)) storedId = n;
+    }
+
     const ydoc = new Y.Doc();
+    if (storedId !== null) {
+      (ydoc as any).clientID = storedId;
+    } else {
+      sessionStorage.setItem(STORAGE_KEY, String(ydoc.clientID));
+    }
     ydocRef.current = ydoc;
+
+    // ---- IndexedDB 持久化（离线编辑） ----
+    // 把文档存在浏览器本地，断网、刷新、关浏览器后内容都还在
+    // 连上网后自动和服务端同步合并
+    new IndexeddbPersistence(`collab-${roomName}`, ydoc);
 
     const wsHost = window.location.hostname || 'localhost';
     const provider = new WebsocketProvider(
       `ws://${wsHost}:8787`,
       roomName,
       ydoc,
-      { connect: true }
+      {
+        connect: true,
+        params: { clientId: String(ydoc.clientID) },
+      }
     );
     providerRef.current = provider;
 

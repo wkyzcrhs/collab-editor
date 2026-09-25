@@ -66,13 +66,31 @@ export function Editor({ collab }: EditorProps) {
   // 输入法 composition 状态（用 state 驱动渲染）
   const [composing, setComposing] = useState<{ blockId: string; text: string } | null>(null);
 
-  // 保存光标位置（Yjs 更新触发 re-render 后恢复）
-  const cursorRef = useRef<{ blockId: string; start: number; end: number } | null>(null);
+  // 保存光标相对位置（Y.RelativePosition）
+  // 对方在光标前插入字符时，光标会自动往前挪，不会被"钉死"在中间
+  const cursorRelRef = useRef<{
+    blockId: string;
+    startRel: Y.RelativePosition;
+    endRel: Y.RelativePosition;
+  } | null>(null);
   const textareaRefs = useRef<Map<string, HTMLTextAreaElement>>(new Map());
 
   // 记录每个块"上次应用到 Y.Text 的值"，用于计算 diff
   // 防止 onChange → Y.Text 更新 → observe 触发 re-render → onChange 循环
   const lastAppliedRef = useRef<Map<string, string>>(new Map());
+
+  // ---- 工具：保存光标为 Y.RelativePosition ----
+  // 用相对位置保存，对方在光标前插入字符时光标自动前移
+  const saveCursorRel = useCallback(
+    (blockId: string, start: number, end: number) => {
+      const ytext = getYText(blockId);
+      if (!ytext) return;
+      const startRel = Y.createRelativePositionFromTypeIndex(ytext, start);
+      const endRel = Y.createRelativePositionFromTypeIndex(ytext, end);
+      cursorRelRef.current = { blockId, startRel, endRel };
+    },
+    [getYText]
+  );
 
   // ---- 工具：广播光标位置 ----
   const broadcastCursor = useCallback(
@@ -101,16 +119,17 @@ export function Editor({ collab }: EditorProps) {
     (blockId: string, e: React.FocusEvent<HTMLTextAreaElement>) => {
       setActive(blockId);
       const start = e.target.selectionStart;
-      cursorRef.current = { blockId, start, end: e.target.selectionEnd };
+      const end = e.target.selectionEnd;
+      saveCursorRel(blockId, start, end);
       broadcastCursor(blockId, start);
     },
-    [setActive, broadcastCursor]
+    [setActive, saveCursorRel, broadcastCursor]
   );
 
   const onBlur = useCallback(
     (blockId: string) => {
       if (activeBlockIdRef.current === blockId) {
-        cursorRef.current = null;
+        cursorRelRef.current = null;
       }
       // 失焦时清空光标广播
       if (activeBlockIdRef.current === blockId) {
@@ -124,14 +143,10 @@ export function Editor({ collab }: EditorProps) {
   const onKeyUp = useCallback(
     (blockId: string, e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       const ta = e.target as HTMLTextAreaElement;
-      cursorRef.current = {
-        blockId,
-        start: ta.selectionStart,
-        end: ta.selectionEnd,
-      };
+      saveCursorRel(blockId, ta.selectionStart, ta.selectionEnd);
       broadcastCursor(blockId, ta.selectionStart);
     },
-    [broadcastCursor]
+    [saveCursorRel, broadcastCursor]
   );
 
   // 鼠标选中文本时也记录
@@ -139,33 +154,38 @@ export function Editor({ collab }: EditorProps) {
     (blockId: string, e: React.SyntheticEvent<HTMLTextAreaElement>) => {
       const ta = e.target as HTMLTextAreaElement;
       if (document.activeElement === ta) {
-        cursorRef.current = {
-          blockId,
-          start: ta.selectionStart,
-          end: ta.selectionEnd,
-        };
+        saveCursorRel(blockId, ta.selectionStart, ta.selectionEnd);
         broadcastCursor(blockId, ta.selectionStart);
       }
     },
-    [broadcastCursor]
+    [saveCursorRel, broadcastCursor]
   );
 
   // ---- 光标位置恢复 ----
-  // Yjs 更新后，如果当前有聚焦的块且不在 composition 中，恢复光标位置
+  // Yjs 更新后，用 Y.RelativePosition 把光标映射回正确的绝对位置
+  // 对方在光标前插入字符 → 光标自动前移，不会被"劈"在中间
   useEffect(() => {
-    if (composing) return;
-    const saved = cursorRef.current;
+    if (composing) return; // composition 期间由本地控制，不恢复
+    const saved = cursorRelRef.current;
     if (!saved) return;
     const ta = textareaRefs.current.get(saved.blockId);
-    if (ta && document.activeElement === ta) {
-      const maxLen = ta.value.length;
-      const start = Math.min(saved.start, maxLen);
-      const end = Math.min(saved.end, maxLen);
-      ta.setSelectionRange(start, end);
-      // 恢复后重新广播光标位置
-      broadcastCursor(saved.blockId, start);
-    }
-  }, [blocks, composing, broadcastCursor]);
+    if (!ta || document.activeElement !== ta) return;
+
+    const ytext = getYText(saved.blockId);
+    if (!ytext || !ytext.doc) return;
+
+    // 把相对位置解析成绝对索引（会自动考虑对方插入的字符）
+    const startAbs = Y.createAbsolutePositionFromRelativePosition(saved.startRel, ytext.doc);
+    const endAbs = Y.createAbsolutePositionFromRelativePosition(saved.endRel, ytext.doc);
+
+    const start = startAbs?.index ?? 0;
+    const end = endAbs?.index ?? start;
+    const maxLen = ta.value.length;
+
+    ta.setSelectionRange(Math.min(start, maxLen), Math.min(end, maxLen));
+    // 恢复后重新广播光标位置
+    broadcastCursor(saved.blockId, Math.min(start, maxLen));
+  }, [blocks, composing, getYText, broadcastCursor]);
 
   // ---- 编辑处理（字符级，通过 diff 应用到 Y.Text） ----
   const onEdit = useCallback(
@@ -404,12 +424,8 @@ export function Editor({ collab }: EditorProps) {
                   onCompositionEnd={(e) => onCompositionEnd(block.id, e.currentTarget.value)}
                   onChange={(e) => {
                     const next = e.target.value;
-                    // 实时记录光标位置
-                    cursorRef.current = {
-                      blockId: block.id,
-                      start: e.target.selectionStart,
-                      end: e.target.selectionEnd,
-                    };
+                    // 实时记录光标相对位置
+                    saveCursorRel(block.id, e.target.selectionStart, e.target.selectionEnd);
                     if (block.text === next && composing?.blockId !== block.id) return;
                     onEdit(block.id, next);
                   }}

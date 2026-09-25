@@ -30,3 +30,5 @@ Thumbs.db
 
 # Vite 缓存
 .vite/
+# LevelDB 运行时数据（服务端持久化）
+server/data/

@@ -18,9 +18,14 @@ import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
+import { LeveldbPersistence } from 'y-leveldb';
 
 const PORT = Number(process.env.PORT ?? 8787);
 const wss = new WebSocketServer({ port: PORT });
+
+// ---- LevelDB 持久化 ----
+// 数据存在 server/data 目录下，服务重启后数据还在
+const persistence = new LeveldbPersistence('./data');
 
 // 房间管理：docName -> { doc, awareness }
 const docs = new Map<string, {
@@ -51,21 +56,16 @@ const DEFAULT_BLOCKS: Y.Map<any>[] = [
   createBlock('b-init-8', 'paragraph', ''),
 ];
 
-/** 获取或创建房间 */
-function getRoom(docName: string) {
+/** 获取或创建房间（支持持久化） */
+async function getRoom(docName: string) {
   let room = docs.get(docName);
   if (room) return room;
 
   const doc = new Y.Doc();
   const awareness = new awarenessProtocol.Awareness(doc);
 
-  // 第一次创建时塞初始内容
-  const yblocks = doc.getArray('blocks');
-  if (yblocks.length === 0) {
-    yblocks.push(DEFAULT_BLOCKS);
-  }
-
-  // 监听文档更新 → 广播给所有连接的客户端
+  // ---- 先注册 update 监听器，再初始化数据 ----
+  // 这样无论是加载持久化数据还是设置默认内容，产生的 update 都会被存进 LevelDB
   doc.on('update', (update: Uint8Array, origin: any) => {
     // origin 是触发更新的来源（我们用 ws 对象标记，避免回发给自己）
     const encoder = encoding.createEncoder();
@@ -79,10 +79,33 @@ function getRoom(docName: string) {
         ws.send(message);
       }
     }
+
+    // ---- 持久化：每次更新都存到 LevelDB ----
+    persistence.storeUpdate(docName, update).then(() => {
+      console.log(`[persistence] update stored for "${docName}" (${update.length} bytes)`);
+    }).catch((err) => {
+      console.error('[persistence] store error:', err);
+    });
   });
 
+  // ---- 持久化：从 LevelDB 加载已有数据 ----
+  const persistedDoc = await persistence.getYDoc(docName);
+  const persistedBlocks = persistedDoc.getArray('blocks');
+  if (persistedBlocks.length > 0) {
+    // 有实际内容，加载到当前 doc
+    const update = Y.encodeStateAsUpdate(persistedDoc);
+    Y.applyUpdate(doc, update);
+    const yblocks = doc.getArray('blocks');
+    console.log(`[persistence] loaded doc "${docName}" from LevelDB (${yblocks.length} blocks)`);
+  } else {
+    // 没有持久化数据，塞初始内容（会触发上面的 update 监听器，把默认内容也存进 LevelDB）
+    const yblocks = doc.getArray('blocks');
+    yblocks.push(DEFAULT_BLOCKS);
+    console.log(`[persistence] no data for "${docName}", initialized with default content (${yblocks.length} blocks)`);
+  }
+
   // 监听 awareness 变化 → 广播给所有人
-  awareness.on('update', ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }, origin: any) => {
+  awareness.on('update', ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }, _origin: any) => {
     const changedClients = added.concat(updated, removed);
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, 1); // message type = awareness
@@ -106,6 +129,10 @@ function getRoom(docName: string) {
 
 // 每个房间的 WebSocket 连接列表
 const connections = new Map<string, Set<WebSocket>>();
+// 每个 ws 关联的 awareness clientID 集合
+const wsClientIds = new WeakMap<WebSocket, Set<number>>();
+// clientID → 当前归属的 ws（用于刷新竞态：同 ID 重连后，旧连接的 close 不得删掉新连接的状态）
+const clientIdOwner = new Map<number, WebSocket>();
 
 function addConnection(docName: string, ws: WebSocket) {
   if (!connections.has(docName)) {
@@ -123,8 +150,8 @@ function removeConnection(docName: string, ws: WebSocket) {
 }
 
 /** 处理一条 WebSocket 消息 */
-function handleMessage(ws: WebSocket, docName: string, data: RawData) {
-  const room = getRoom(docName);
+async function handleMessage(ws: WebSocket, docName: string, data: RawData) {
+  const room = await getRoom(docName);
   const { doc, awareness } = room;
 
   const uint8 = new Uint8Array(data as Buffer);
@@ -157,37 +184,65 @@ function handleMessage(ws: WebSocket, docName: string, data: RawData) {
   }
 }
 
-wss.on('connection', (ws, req) => {
-  // 从 URL path 提取房间名
-  const url = req.url ?? '/default';
-  const docName = url.slice(1).split('?')[0] || 'default';
+wss.on('connection', async (ws, req) => {
+  // 从 URL 提取房间名和 clientId
+  const fullUrl = req.url ?? '/default';
+  const [pathPart, queryPart] = fullUrl.split('?');
+  const docName = pathPart.slice(1) || 'default';
+  const params = new URLSearchParams(queryPart ?? '');
+  const clientIdStr = params.get('clientId');
+  const clientId = clientIdStr ? Number(clientIdStr) : null;
 
-  const room = getRoom(docName);
+  // 异步加载房间（等待持久化数据加载完成）
+  const room = await getRoom(docName);
   addConnection(docName, ws);
 
-  // 连接建立后，先发一个 sync step1（服务端的状态向量）
-  // 不，标准流程是客户端先发 step1，服务端回 step2
-  // 我们这里只需要被动响应客户端的消息
+  // 如果前端传了 clientId，直接关联到这个 ws，并记录归属
+  if (clientId !== null && !isNaN(clientId)) {
+    let idSet = wsClientIds.get(ws);
+    if (!idSet) {
+      idSet = new Set();
+      wsClientIds.set(ws, idSet);
+    }
+    idSet.add(clientId);
+    // 新连接接管这个 clientID（旧连接若之后才 close，会发现归属已易主，不会误删）
+    clientIdOwner.set(clientId, ws);
+  }
 
-  ws.on('message', (data) => {
+  // 把房间里现有的 awareness 状态（其他在线用户）发给新连接
+  // 否则刷新后的页面只知道自己是 1 个人
+  const existingStates = Array.from(room.awareness.getStates().keys());
+  if (existingStates.length > 0 && ws.readyState === WebSocket.OPEN) {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, 1); // message type = awareness
+    encoding.writeVarUint8Array(
+      encoder,
+      awarenessProtocol.encodeAwarenessUpdate(room.awareness, existingStates)
+    );
+    ws.send(encoding.toUint8Array(encoder));
+  }
+
+  ws.on('message', async (data) => {
     try {
-      handleMessage(ws, docName, data);
+      await handleMessage(ws, docName, data);
     } catch (err) {
       console.error('message error:', err);
     }
   });
 
   ws.on('close', () => {
-    // 清理 awareness（把自己从在线列表里移除）
-    awarenessProtocol.removeAwarenessStates(
-      room.awareness,
-      Array.from(room.awareness.getStates().keys()).filter((clientid) => {
-        // 这里简单处理：关闭连接时清理所有没有对应 ws 的 awareness
-        // 实际上 y-websocket 是通过 origin 追踪的，我们简化处理
-        return false;
-      }),
-      ws
-    );
+    // 清理 awareness：只删仍归这个 ws 所有的 clientID
+    const clientIds = wsClientIds.get(ws);
+    if (clientIds && clientIds.size > 0) {
+      const toRemove = Array.from(clientIds).filter((id) => clientIdOwner.get(id) === ws);
+      if (toRemove.length > 0) {
+        awarenessProtocol.removeAwarenessStates(room.awareness, toRemove, ws);
+        for (const id of toRemove) {
+          clientIdOwner.delete(id);
+        }
+      }
+      wsClientIds.delete(ws);
+    }
     removeConnection(docName, ws);
   });
 
