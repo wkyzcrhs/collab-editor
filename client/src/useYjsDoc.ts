@@ -17,6 +17,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import { IndexeddbPersistence } from 'y-indexeddb';
+import * as encoding from 'lib0/encoding';
 import type { Block, BlockKind } from '../../shared/protocol';
 
 // 用户颜色池
@@ -89,9 +90,37 @@ export function useYjsDoc(roomName = 'default') {
       {
         connect: true,
         params: { clientId: String(ydoc.clientID) },
+        // 每 15 秒重新同步一次：保持连接流量（防 NAT 超时），断流时也能更快被发现
+        resyncInterval: 15000,
       }
     );
     providerRef.current = provider;
+
+    // 手机息屏/切后台恢复时，浏览器定时器被冻结过，可能错过重连窗口和 awareness 更新。
+    // 页面重新可见时：
+    //   1. 检查连接，断了就马上重连
+    //   2. 主动发 queryAwareness 拉取最新完整在线列表（防止漏掉增量更新）
+    const queryAwareness = () => {
+      if (!provider.wsconnected || !provider.ws) return;
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, 3); // messageQueryAwareness
+      provider.ws.send(encoding.toUint8Array(encoder));
+      console.log('[awareness] queried full online list from server');
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        if (!provider.wsconnected) {
+          provider.connect();
+          // 连接建立后拉一次（等 onopen 触发后自然会同步，但保险起见稍后再拉一次）
+          setTimeout(queryAwareness, 1000);
+        } else {
+          // 已经连着，直接拉最新列表
+          queryAwareness();
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
 
     // 获取 blocks 共享数组
     const yblocks = ydoc.getArray<any>('blocks');
@@ -172,6 +201,10 @@ export function useYjsDoc(roomName = 'default') {
       });
       setClients(users);
       setRemoteCursors(cursors);
+      // 诊断日志：追踪在线用户变化
+      console.log(
+        `[awareness] update: total=${users.length} users=[${users.map(u => u.name).join(', ')}]`
+      );
     };
 
     provider.awareness.on('change', updateAwareness);

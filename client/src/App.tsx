@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useYjsDoc } from './useYjsDoc';
 import { Editor } from './Editor';
+import { AIPanel } from './AIPanel';
 
 const DOCS = [
   { id: 'prd', icon: '📄', name: '产品需求文档', active: true },
@@ -18,6 +19,12 @@ export default function App() {
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   });
 
+  // 侧边栏折叠（窄屏用抽屉）
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    return !window.matchMedia('(max-width: 768px)').matches;
+  });
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('theme', theme);
@@ -30,10 +37,17 @@ export default function App() {
   return (
     <div className="app">
       {/* 侧边栏 */}
-      <aside className="sidebar">
+      <aside className={`sidebar ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
         <div className="sidebar-brand">
           <div className="brand-logo" />
           <span className="brand-name">Collab Docs</span>
+          <button
+            className="sidebar-close-btn"
+            onClick={() => setSidebarOpen(false)}
+            title="收起侧边栏"
+          >
+            ×
+          </button>
         </div>
 
         <div className="sidebar-section">
@@ -71,6 +85,13 @@ export default function App() {
       <main className="main">
         <div className="topbar">
           <div className="breadcrumb">
+            <button
+              className="sidebar-open-btn"
+              onClick={() => setSidebarOpen(true)}
+              title="展开侧边栏"
+            >
+              ☰
+            </button>
             <span>工作区</span>
             <span className="breadcrumb-sep">/</span>
             <strong>产品需求文档</strong>
@@ -93,6 +114,14 @@ export default function App() {
 
         <Editor collab={collab} />
       </main>
+
+      {/* AI 助手面板 */}
+      <AIPanel blocks={collab.blocks} wsHost={window.location.hostname || 'localhost'} />
+
+      {/* 窄屏遮罩层 */}
+      {sidebarOpen && (
+        <div className="mobile-overlay" onClick={() => setSidebarOpen(false)} />
+      )}
     </div>
   );
 }

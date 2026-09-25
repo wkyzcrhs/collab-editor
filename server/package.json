@@ -8,6 +8,7 @@
     "start": "tsx src/index.ts"
   },
   "dependencies": {
+    "dotenv": "^18.0.3",
     "level": "^10.0.0",
     "lib0": "^0.2.117",
     "tsx": "^4.19.2",
