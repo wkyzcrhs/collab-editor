@@ -61,6 +61,9 @@ export function useYjsDoc(roomName = 'default') {
   useEffect(() => {
     // sessionStorage 按标签页隔离：同一标签页刷新后身份不变，
     // 同浏览器的其他窗口是独立用户（localStorage 会导致多窗口撞成同一人）
+    // 注意：每个房间的 clientID 加独立后缀 —— y-websocket 的 BroadcastChannel
+    // 会检测"同浏览器同 clientID"并自动改 ID，导致在线用户名字乱跳。
+    // 不同房间用不同 ID 既解决冲突，也符合"同一人在不同文档里是独立连接"的语义。
     const STORAGE_KEY = 'collab-editor-client-id';
     let storedId: number | null = null;
     const stored = sessionStorage.getItem(STORAGE_KEY);
@@ -70,17 +73,32 @@ export function useYjsDoc(roomName = 'default') {
     }
 
     const ydoc = new Y.Doc();
-    if (storedId !== null) {
-      (ydoc as any).clientID = storedId;
-    } else {
-      sessionStorage.setItem(STORAGE_KEY, String(ydoc.clientID));
+    // 以基础 ID 为种子，每个房间派生一个独立 ID（保证同标签页同房间 ID 稳定）
+    const baseId = storedId ?? ydoc.clientID;
+    if (storedId === null) {
+      sessionStorage.setItem(STORAGE_KEY, String(baseId));
     }
+    // 用简单的字符串哈希 + 基础 ID 生成房间专属 clientID
+    let hash = 0;
+    for (let i = 0; i < roomName.length; i++) {
+      hash = ((hash << 5) - hash + roomName.charCodeAt(i)) | 0;
+    }
+    (ydoc as any).clientID = Math.abs(baseId + hash);
     ydocRef.current = ydoc;
+
+    // 切换文档时立即清空上一篇的界面状态，
+    // 避免新文档同步完成前短暂显示上一篇的内容
+    setBlocks([]);
+    setClients([]);
+    setRemoteCursors([]);
+    setConnected(false);
 
     // ---- IndexedDB 持久化（离线编辑） ----
     // 把文档存在浏览器本地，断网、刷新、关浏览器后内容都还在
     // 连上网后自动和服务端同步合并
-    new IndexeddbPersistence(`collab-${roomName}`, ydoc);
+    // 库名带 v6：v5 之前的本地缓存含"跨文档串台 + 重复 H1 标题"时期的脏数据，已在 main.tsx 一次性清除
+    // 每次修复内容重复类 Bug 时升级版本号，让旧缓存整体作废
+    const idb = new IndexeddbPersistence(`collab-v6-${roomName}`, ydoc);
 
     const wsHost = window.location.hostname || 'localhost';
     const provider = new WebsocketProvider(
@@ -224,13 +242,26 @@ export function useYjsDoc(roomName = 'default') {
     undoManagerRef.current = undoManager;
 
     return () => {
-      // 清理
+      // 清理顺序很重要：先停监听 → 清 awareness → 断连接 → 销毁文档
       yblocks.unobserveDeep(handleObserve);
       provider.off('sync', handleSync);
       provider.off('status', handleStatus);
       provider.awareness.off('change', updateAwareness);
+      document.removeEventListener('visibilitychange', handleVisibility);
+
+      // 先把自己从 awareness 里拿掉（null 状态 = 下线通知）
+      // 防止 destroy 时 BroadcastChannel 编码出错（读不到 clock）
+      try {
+        provider.awareness.setLocalState(null);
+      } catch { /* ignore */ }
+
       undoManager.destroy();
-      provider.destroy();
+      try {
+        provider.destroy();
+      } catch { /* y-websocket 销毁时偶发 awareness 编码错误，忽略不影响功能 */ }
+      try {
+        idb.destroy();
+      } catch { /* ignore */ }
       ydoc.destroy();
     };
   }, [roomName, bumpVersion]);

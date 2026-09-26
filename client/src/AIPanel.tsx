@@ -1,9 +1,17 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import type { Block, BlockKind } from '../../shared/protocol';
+
+interface WorkspaceDoc {
+  id: string;
+  name: string;
+  icon?: string;
+}
 
 interface AIPanelProps {
-  blocks: Block[];
   wsHost: string;
+  /** 当前所在的文档 ID，传给服务端让 AI 知道用户在哪篇文档里提问 */
+  docId: string;
+  /** 工作区全部文档列表（含新建文档），AI 按此列表加载内容做跨文档问答 */
+  docs: WorkspaceDoc[];
 }
 
 interface ChatMessage {
@@ -11,22 +19,25 @@ interface ChatMessage {
   content: string;
 }
 
-const QUICK_PROMPTS = [
-  { label: '📝 总结文档', question: '请用 3 句话总结这篇文档的核心内容。' },
-  { label: '✅ 检查待办', question: '文档里有没有待办事项、TODO、或者需要跟进的事情？列出来。' },
-  { label: '💡 改进建议', question: '这篇文档有哪些可以改进的地方？给出 3 条具体建议。' },
-  { label: '🔍 提炼大纲', question: '请根据文档内容，提炼一个结构化的大纲（一级/二级标题）。' },
-];
+type AiScope = 'doc' | 'workspace';
 
-const KIND_PREFIX: Record<BlockKind, string> = {
-  heading1: '# ',
-  heading2: '## ',
-  bullet: '- ',
-  quote: '> ',
-  paragraph: '',
+/** 两种范围下的快捷指令：文案和问题都不一样 */
+const QUICK_PROMPTS_BY_SCOPE: Record<AiScope, Array<{ label: string; question: string }>> = {
+  doc: [
+    { label: '📝 总结文档', question: '用 3 句话总结一下这篇文档的核心内容。' },
+    { label: '✅ 检查待办', question: '这篇文档里有哪些待办事项、TODO、或者需要跟进的事情？列出来。' },
+    { label: '💡 改进建议', question: '基于这篇文档的内容，你觉得有哪些可以改进的地方？给出 3 条具体建议。' },
+    { label: '🔍 提炼大纲', question: '请梳理这篇文档，给出一个结构化的大纲。' },
+  ],
+  workspace: [
+    { label: '📝 总结工作区', question: '用 3 句话总结一下工作区所有文档的核心内容。' },
+    { label: '✅ 检查待办', question: '工作区所有文档里，有哪些待办事项、TODO、或者需要跟进的事情？按文档分类列出来。' },
+    { label: '💡 改进建议', question: '基于当前工作区的内容，你觉得有哪些可以改进的地方？给出 3 条具体建议。' },
+    { label: '🔍 提炼大纲', question: '请梳理工作区文档，给出一个结构化的总览大纲（按文档分类）。' },
+  ],
 };
 
-export function AIPanel({ blocks, wsHost }: AIPanelProps) {
+export function AIPanel({ wsHost, docId, docs }: AIPanelProps) {
   // 窄屏（手机/平板）默认收起，宽屏默认展开
   const [open, setOpen] = useState(() => {
     if (typeof window === 'undefined') return true;
@@ -35,16 +46,10 @@ export function AIPanel({ blocks, wsHost }: AIPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  // 默认"当前文档"——大多数时候用户问的是眼前这篇，跨文档是少数场景
+  const [scope, setScope] = useState<AiScope>('doc');
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
-
-  // 把所有块拼成纯文本作为文档内容
-  const getDocumentContent = useCallback(() => {
-    return blocks.map((b) => {
-      const prefix = KIND_PREFIX[b.kind] ?? '';
-      return prefix + b.text;
-    }).join('\n\n');
-  }, [blocks]);
 
   // 自动滚动到底部
   useEffect(() => {
@@ -57,7 +62,6 @@ export function AIPanel({ blocks, wsHost }: AIPanelProps) {
   const sendMessage = useCallback(async (question: string) => {
     if (!question.trim() || loading) return;
 
-    const documentContent = getDocumentContent();
     const userMsg: ChatMessage = { role: 'user', content: question };
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
@@ -73,7 +77,7 @@ export function AIPanel({ blocks, wsHost }: AIPanelProps) {
       const response = await fetch(`http://${wsHost}:8787/api/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, documentContent }),
+        body: JSON.stringify({ question, roomName: docId, docs, scope }),
         signal: controller.signal,
       });
 
@@ -132,7 +136,7 @@ export function AIPanel({ blocks, wsHost }: AIPanelProps) {
       setLoading(false);
       abortRef.current = null;
     }
-  }, [loading, getDocumentContent, wsHost]);
+  }, [loading, wsHost, docId, docs, scope]);
 
   const stopGenerate = () => {
     abortRef.current?.abort();
@@ -169,7 +173,27 @@ export function AIPanel({ blocks, wsHost }: AIPanelProps) {
         </div>
       </div>
 
-      <div className="ai-hint">基于当前文档内容回答问题</div>
+      <div className="ai-hint">
+        {scope === 'doc' ? '基于当前文档回答问题' : '基于工作区所有文档回答问题'}
+      </div>
+
+      {/* 范围切换：当前文档 / 工作区 */}
+      <div className="ai-scope-switch">
+        <button
+          className={`ai-scope-btn ${scope === 'doc' ? 'active' : ''}`}
+          onClick={() => setScope('doc')}
+          title="只读取当前打开的这篇文档"
+        >
+          📄 当前文档
+        </button>
+        <button
+          className={`ai-scope-btn ${scope === 'workspace' ? 'active' : ''}`}
+          onClick={() => setScope('workspace')}
+          title="读取工作区全部文档（跨文档问答）"
+        >
+          📚 工作区
+        </button>
+      </div>
 
       <div className="ai-messages" ref={scrollRef}>
         {messages.length === 0 && (
@@ -193,7 +217,7 @@ export function AIPanel({ blocks, wsHost }: AIPanelProps) {
       </div>
 
       <div className="ai-quick">
-        {QUICK_PROMPTS.map((p) => (
+        {QUICK_PROMPTS_BY_SCOPE[scope].map((p) => (
           <button
             key={p.label}
             className="ai-quick-btn"

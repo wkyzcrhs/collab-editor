@@ -15,6 +15,8 @@ const BLOCK_KINDS: { kind: BlockKind; label: string; icon: string }[] = [
 
 interface EditorProps {
   collab: Collab;
+  /** 当前文档的显示名（侧边栏文档名），作为编辑器顶部标题 */
+  docTitle: string;
 }
 
 /**
@@ -45,7 +47,7 @@ function applyDiffToYText(ytext: Y.Text, oldVal: string, newVal: string) {
   }
 }
 
-export function Editor({ collab }: EditorProps) {
+export function Editor({ collab, docTitle }: EditorProps) {
   const {
     blocks,
     remoteCursors,
@@ -345,9 +347,8 @@ export function Editor({ collab }: EditorProps) {
       {/* 文档区 */}
       <div className="doc-scroller">
         <div className="doc-content">
-          <div className="doc-title" contentEditable suppressContentEditableWarning>
-            产品需求文档
-          </div>
+          {/* 文档标题：跟随侧边栏选中的文档名，不再写死 */}
+          <div className="doc-title">{docTitle}</div>
 
           {blocks.map((block: Block) => {
             const showMenu = menuOpen === block.id;

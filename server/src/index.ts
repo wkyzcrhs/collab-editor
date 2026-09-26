@@ -78,22 +78,165 @@ function createBlock(id: string, kind: string, text: string): Y.Map<any> {
   return map;
 }
 
-const DEFAULT_BLOCKS: Y.Map<any>[] = [
-  createBlock('b-init-1', 'heading1', '欢迎使用协同编辑器 👋'),
-  createBlock('b-init-2', 'paragraph', '这是一个基于 Yjs CRDT 的协同编辑 Demo，支持多人同时编辑同一块。'),
-  createBlock('b-init-3', 'heading2', '核心特性'),
-  createBlock('b-init-4', 'bullet', 'Yjs CRDT 无冲突协同，两个人可以同时改同一块'),
-  createBlock('b-init-5', 'bullet', '毫秒级实时同步，流畅乐观更新'),
-  createBlock('b-init-6', 'bullet', '天然支持离线编辑，上线自动合并'),
-  createBlock('b-init-7', 'quote', '💡 提示：打开两个浏览器窗口，试试同时编辑同一段文字。'),
-  createBlock('b-init-8', 'paragraph', ''),
-];
+/** 不同文档的默认初始内容（只存定义：[块类型, 文本]）
+ *  注意：这里不能直接存 Y.Map 实例 —— Y.Map 一旦被集成进某个 Y.Doc 就与该文档绑定，
+ *  同一实例再进另一个文档会损坏 CRDT 结构，导致内容跨文档串台、块重复。
+ *  所以每次初始化都由 getDefaultBlocks 现场创建全新实例 */
+const DEFAULT_BLOCK_DEFS: Record<string, Array<[string, string]>> = {
+  prd: [
+    ['heading1', '欢迎使用协同编辑器 👋'],
+    ['paragraph', '这是一个基于 Yjs CRDT 的协同编辑 Demo，支持多人同时编辑同一块。'],
+    ['heading2', '核心特性'],
+    ['bullet', 'Yjs CRDT 无冲突协同，两个人可以同时改同一块'],
+    ['bullet', '毫秒级实时同步，流畅乐观更新'],
+    ['bullet', '天然支持离线编辑，上线自动合并'],
+    ['quote', '💡 提示：打开两个浏览器窗口，试试同时编辑同一段文字。'],
+    ['paragraph', ''],
+  ],
+  meeting: [
+    // 注意：文档名已在侧边栏/面包屑显示，默认内容不再放同名 H1 标题，直接从正文开始
+    ['paragraph', '日期：2026-09-23 ｜ 参会人：产品、前端、后端'],
+    ['heading2', '议题一：并发编辑 Bug 排查'],
+    ['paragraph', '两端在同一块高频输入时出现"倒三角"块分裂现象，块数量指数级增长。'],
+    ['bullet', '根因：块级 CRDT 每次更新是"删旧+插新"，并发下双方操作都被保留'],
+    ['bullet', '解决方案：升级到字符级 CRDT（Y.Text），操作粒度降到单字符'],
+    ['bullet', '预计工作量：2 天，前端 + 服务端同步改造'],
+    ['heading2', '议题二：在线用户同步'],
+    ['paragraph', '手机端有时少显示一个在线用户，电脑端正常。'],
+    ['bullet', '根因：Awareness 只广播增量更新，手机后台重连可能漏掉某个用户的初始状态'],
+    ['bullet', '解决方案：服务端定期全量广播 + 客户端回前台主动拉取'],
+    ['heading2', '待跟进事项'],
+    ['bullet', '前端：完成光标劈叉 Bug 修复（Bug 7）'],
+    ['bullet', '后端：接入 AI 助手接口，支持跨文档问答'],
+    ['bullet', '运维：周日前完成公网 Demo 部署'],
+  ],
+  todo: [
+    ['heading2', '本周'],
+    ['bullet', '完成字符级 CRDT 改造（v3）✅'],
+    ['bullet', '修复并发光标劈叉问题（Bug 7）✅'],
+    ['bullet', '在线用户多端同步修复 ✅'],
+    ['bullet', '工作区多文档打通 🚧 进行中'],
+    ['bullet', 'AI 助手跨文档问答 🚧 进行中'],
+    ['heading2', '下周'],
+    ['bullet', '公网 Demo 部署（阿里云轻量 + Nginx）'],
+    ['bullet', '富文本格式支持（加粗 / 斜体 / 链接）'],
+    ['bullet', '版本快照与历史回退'],
+    ['heading2', '长期'],
+    ['bullet', '评论 / 批注功能'],
+    ['bullet', '精确光标渲染（文本内光标竖线）'],
+    ['bullet', '团队工作区 / 权限管理'],
+  ],
+  daily: [
+    ['heading2', '2026-09-25 周五'],
+    ['bullet', '上午：修复在线用户多端同步 Bug，手机端少显示一人的问题'],
+    ['bullet', '下午：打通工作区多文档，AI 助手改为读取整个工作区上下文'],
+    ['bullet', '晚上：精简 README，移除面试相关措辞，增加 AI 助手展示模块'],
+    ['quote', '💡 今日收获：分布式状态同步问题看似简单，实际涉及心跳检测、幽灵节点、增量 vs 全量广播等经典问题。'],
+    ['heading2', '2026-09-24 周四'],
+    ['bullet', '完成 v3 字符级 CRDT 改造，Y.Text 替代整块 string 替换'],
+    ['bullet', '修复 Bug 7 光标劈叉问题，改用 Y.RelativePosition'],
+    ['bullet', '接入 DeepSeek AI 助手，SSE 流式输出'],
+    ['heading2', '2026-09-23 周三'],
+    ['bullet', '真机测试 v2 块级 CRDT，发现倒三角分裂、删除失效等问题'],
+    ['bullet', '确认升级字符级 CRDT 的技术方案，开始 v3 开发'],
+  ],
+};
 
-/** 获取或创建房间（支持持久化） */
-async function getRoom(docName: string) {
-  let room = docs.get(docName);
-  if (room) return room;
+/** 获取指定文档的默认块列表（每次返回全新实例；未知文档 ID → 一块空段落，即空白文档） */
+function getDefaultBlocks(docName: string): Y.Map<any>[] {
+  const defs: Array<[string, string]> = DEFAULT_BLOCK_DEFS[docName] ?? [['paragraph', '']];
+  return defs.map(([kind, text], i) => createBlock(`${docName}-init-${i + 1}`, kind, text));
+}
 
+/** 文档 ID → 侧边栏显示名（用于清理文档内与文档名重复的 H1 标题块） */
+const WORKSPACE_DOC_NAMES: Record<string, string> = {
+  prd: '产品需求文档',
+  meeting: '会议纪要',
+  todo: '待办清单',
+  daily: '每日速记',
+};
+
+/** 所有工作区文档名集合 —— 任何文档名的 H1 出现在任何房间都是脏数据（含跨文档串台），一律清除 */
+const ALL_DOC_NAMES = new Set(Object.values(WORKSPACE_DOC_NAMES));
+
+/** 读取块文本（兼容历史数据里 text 为普通 string 的 v2 旧格式） */
+function blockText(m: Y.Map<any>): string {
+  const t = m.get('text');
+  if (typeof t === 'string') return t;
+  return t ? t.toString() : '';
+}
+
+/**
+ * 内容健康检查：去重 + 清理冗余 H1
+ *
+ * 背景：开发期客户端 IndexedDB 常残留旧版本的脏数据，
+ * 重连时 CRDT 会把两边内容都保留 → 默认内容翻倍、出现已删除的旧 H1 标题等。
+ * 这个函数是服务端的最后一道防线：
+ *   1. 按块 id 去重（同 id 只保留第一个）
+ *   2. 删除所有与文档显示名相同的 H1 块
+ * 返回被清理的块数量（供日志记录）。
+ */
+function dedupeAndCleanBlocks(docName: string, yblocks: Y.Array<any>): number {
+  const blocks = yblocks.toArray() as Y.Map<any>[];
+  if (blocks.length === 0) return 0;
+
+  const seenIds = new Set<string>();
+  const indicesToRemove: number[] = [];
+
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    const id = b.get('id') as string;
+    const kind = b.get('kind') as string;
+
+    // 规则 1：同 id 的块只保留第一个（重复的都是 CRDT 合并出来的脏数据）
+    if (id && seenIds.has(id)) {
+      indicesToRemove.push(i);
+      continue;
+    }
+    if (id) seenIds.add(id);
+
+    // 规则 2：任何工作区文档名的 H1 都是脏数据，一律删除。
+    // 历史教训：早期版本给每个文档的默认内容都塞过 H1 标题，串台污染更是让
+    // "产品需求文档"这个 H1 出现在会议纪要/待办清单/每日速记/新建文档里。
+    // 只匹配"本房间文档名"会漏掉串台来的标题，所以这里匹配所有文档名。
+    if (kind === 'heading1' && ALL_DOC_NAMES.has(blockText(b).trim())) {
+      indicesToRemove.push(i);
+    }
+  }
+
+  if (indicesToRemove.length === 0) return 0;
+
+  // 从后往前删，保证前面的索引不失效
+  // 注意：Y.Array.delete(idx, count) 是连续删除，用单删更精准
+  for (let i = indicesToRemove.length - 1; i >= 0; i--) {
+    yblocks.delete(indicesToRemove[i], 1);
+  }
+
+  console.log(
+    `[cleanup] room="${docName}" removed ${indicesToRemove.length} blocks ` +
+    `(duplicates + redundant H1), ${yblocks.length} remaining`
+  );
+  return indicesToRemove.length;
+}
+
+/** 房间创建的 Promise 缓存：防止并发首次访问同一房间时初始化两份默认内容 */
+const roomPromises = new Map<string, Promise<{ doc: Y.Doc; awareness: awarenessProtocol.Awareness }>>();
+
+/** 获取或创建房间（支持持久化 + 并发保护） */
+function getRoom(docName: string) {
+  const existing = docs.get(docName);
+  if (existing) return Promise.resolve(existing);
+
+  let p = roomPromises.get(docName);
+  if (!p) {
+    p = createRoom(docName);
+    roomPromises.set(docName, p);
+    p.finally(() => roomPromises.delete(docName)).catch(() => {});
+  }
+  return p;
+}
+
+async function createRoom(docName: string) {
   const doc = new Y.Doc();
   const awareness = new awarenessProtocol.Awareness(doc);
 
@@ -128,14 +271,32 @@ async function getRoom(docName: string) {
     // 有实际内容，加载到当前 doc
     const update = Y.encodeStateAsUpdate(persistedDoc);
     Y.applyUpdate(doc, update);
-    const yblocks = doc.getArray('blocks');
-    console.log(`[persistence] loaded doc "${docName}" from LevelDB (${yblocks.length} blocks)`);
-  } else {
-    // 没有持久化数据，塞初始内容（会触发上面的 update 监听器，把默认内容也存进 LevelDB）
-    const yblocks = doc.getArray('blocks');
-    yblocks.push(DEFAULT_BLOCKS);
-    console.log(`[persistence] no data for "${docName}", initialized with default content (${yblocks.length} blocks)`);
   }
+  persistedDoc.destroy();
+
+  const yblocks = doc.getArray('blocks');
+
+  // ---- 初始化标记：默认内容只允许写入一次 ----
+  // meta 是文档内的 Y.Map，会随文档一起持久化。无论初始化代码被意外执行多少次
+  // （并发建房、热更新、未来误改），标记存在就绝不再插入第二份默认内容
+  const ymeta = doc.getMap('meta');
+  if (ymeta.get('initialized') !== true) {
+    ymeta.set('initialized', true);
+    if (yblocks.length === 0) {
+      // 没有持久化数据，塞初始内容（会触发上面的 update 监听器，把默认内容也存进 LevelDB）
+      yblocks.push(getDefaultBlocks(docName));
+      console.log(`[persistence] no data for "${docName}", initialized with default content (${yblocks.length} blocks)`);
+    }
+  }
+
+  // ---- 内容健康检查：去重 + 清理冗余 H1 ----
+  // 开发期常见问题：客户端 IndexedDB 存了旧版本的脏数据，重连时通过 CRDT 合并回服务端，
+  // 导致默认内容翻倍、出现已删除的"文档同名 H1 标题"等。
+  // 这里做两道清理：
+  //   1. 按块的 id 去重（同 id 的块只保留第一个）——解决内容翻倍
+  //   2. 删除所有与文档名相同的 H1 块——解决侧边栏/面包屑已显示标题，文档内再写一遍就冗余
+  // 这是服务端的最后一道防线，即使客户端缓存再脏，服务端也能自动纠正。
+  dedupeAndCleanBlocks(docName, yblocks);
 
   // 监听 awareness 变化 → 广播给所有人
   awareness.on('update', ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }, origin: any) => {
@@ -168,7 +329,7 @@ async function getRoom(docName: string) {
     }
   });
 
-  room = { doc, awareness };
+  const room = { doc, awareness };
   docs.set(docName, room);
   return room;
 }
@@ -276,37 +437,69 @@ console.log(`[keepalive] ping every ${PING_INTERVAL / 1000}s, unresponsive conne
 // ---- Awareness 定期全量广播（保底机制）----
 // 解决手机端可能漏掉增量更新的问题：每 10 秒推送一次完整在线列表
 // 即使某个客户端错过了某个用户的上线/下线消息，也能在下一次全量广播时纠正
+/**
+ * 向指定房间的所有连接广播完整的 awareness 列表（全量同步）。
+ *
+ * 用途：
+ *   1. 新用户加入时立即广播一次——让老用户瞬间看到新人，不等 10s 全量周期
+ *   2. 定时兜底广播——防止增量更新丢帧导致的在线列表不一致
+ * 返回实际发送的客户端数量。
+ */
+function broadcastFullAwareness(docName: string, awareness: awarenessProtocol.Awareness): number {
+  const allIds = Array.from(awareness.getStates().keys());
+  if (allIds.length === 0) return 0;
+  const connSet = connections.get(docName);
+  if (!connSet || connSet.size === 0) return 0;
+
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, 1); // message type = awareness
+  encoding.writeVarUint8Array(
+    encoder,
+    awarenessProtocol.encodeAwarenessUpdate(awareness, allIds)
+  );
+  const message = encoding.toUint8Array(encoder);
+
+  let sent = 0;
+  for (const ws of connSet) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(message);
+      sent++;
+    }
+  }
+  return sent;
+}
+
 const FULL_AWARENESS_INTERVAL = 10000;
 setInterval(() => {
   for (const [docName, room] of docs) {
-    const allIds = Array.from(room.awareness.getStates().keys());
-    if (allIds.length === 0) continue;
-    const connSet = connections.get(docName);
-    if (!connSet || connSet.size === 0) continue;
-
-    const encoder = encoding.createEncoder();
-    encoding.writeVarUint(encoder, 1); // message type = awareness
-    encoding.writeVarUint8Array(
-      encoder,
-      awarenessProtocol.encodeAwarenessUpdate(room.awareness, allIds)
-    );
-    const message = encoding.toUint8Array(encoder);
-
-    let sent = 0;
-    for (const ws of connSet) {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(message);
-        sent++;
-      }
-    }
+    const sent = broadcastFullAwareness(docName, room.awareness);
     if (sent > 0) {
+      const userCount = room.awareness.getStates().size;
       console.log(
-        `[awareness] full broadcast room="${docName}" users=${allIds.length} clients=${sent}`
+        `[awareness] full broadcast room="${docName}" users=${userCount} clients=${sent}`
       );
     }
   }
 }, FULL_AWARENESS_INTERVAL);
 console.log(`[awareness] full broadcast every ${FULL_AWARENESS_INTERVAL / 1000}s (safety net)`);
+
+// ---- 内容健康检查定期执行（兜底机制）----
+// 客户端带着旧 IndexedDB 缓存重连时，CRDT 合并可能产生重复块。
+// 每 30 秒扫一遍所有房间，自动清理重复块和冗余 H1。
+// 正常情况下什么都不做；真有脏数据也能在 30 秒内自动纠正。
+const HEALTH_CHECK_INTERVAL = 30000;
+setInterval(() => {
+  let totalCleaned = 0;
+  for (const [docName, room] of docs) {
+    const yblocks = room.doc.getArray<any>('blocks');
+    const removed = dedupeAndCleanBlocks(docName, yblocks);
+    totalCleaned += removed;
+  }
+  if (totalCleaned > 0) {
+    console.log(`[health-check] cleaned ${totalCleaned} dirty blocks across ${docs.size} rooms`);
+  }
+}, HEALTH_CHECK_INTERVAL);
+console.log(`[health-check] runs every ${HEALTH_CHECK_INTERVAL / 1000}s (dedup + H1 cleanup)`);
 
 wss.on('connection', async (ws, req) => {
   // 保活标记：pong 回来时置 true，ping 周期里检查
@@ -357,6 +550,25 @@ wss.on('connection', async (ws, req) => {
     console.log(`[ws]   → sent awareness snapshot (${existingStates.length} users) to new client`);
   }
 
+  // 新用户加入时，立即向房间里所有人全量广播一次在线列表。
+  // 原有的增量广播（awareness.on('update')）会通知老用户"来了新人"，
+  // 但网络抖动可能导致某端丢帧，需要等 10 秒的全量周期才能补上。
+  // 这里追加一次主动全量广播，把"最快看到对方"的延迟从"下一个 10 秒周期"
+  // 降到"连接建立瞬间"，尤其改善手机端打开后在线用户列表迟迟不全的体验。
+  // 注意：这一步在 clientId 写入 awareness 之前执行，等客户端回第一个 sync
+  // 后 awareness update 会再触发一次增量广播——两次之间的极小窗口不影响正确性。
+  // 为避免重复日志，只在确实有多个客户端时才打 log。
+  if (connCount > 1) {
+    const sent = broadcastFullAwareness(docName, room.awareness);
+    if (sent > 0) {
+      const userCount = room.awareness.getStates().size;
+      console.log(
+        `[awareness] join-triggered full broadcast room="${docName}" ` +
+        `users=${userCount} clients=${sent}`
+      );
+    }
+  }
+
   ws.on('message', async (data) => {
     try {
       await handleMessage(ws, docName, data, clientId);
@@ -394,6 +606,47 @@ wss.on('connection', async (ws, req) => {
   });
 });
 
+// 工作区文档列表（与前端侧边栏对应）
+const WORKSPACE_DOCS = [
+  { id: 'prd',     name: '产品需求文档' },
+  { id: 'meeting', name: '会议纪要' },
+  { id: 'todo',    name: '待办清单' },
+  { id: 'daily',   name: '每日速记' },
+];
+
+/** 从 LevelDB 加载一篇文档的纯文本内容（只读，不修改共享状态） */
+async function loadDocText(docId: string): Promise<string> {
+  const ydoc = await persistence.getYDoc(docId);
+  const yblocks = ydoc.getArray<any>('blocks');
+  const lines: string[] = [];
+  for (const ymap of yblocks.toArray() as Y.Map<any>[]) {
+    const kind = ymap.get('kind') as string;
+    const text = (ymap.get('text') as Y.Text)?.toString() ?? '';
+    // 用块类型做前缀，让 AI 知道这是标题/正文/列表
+    const prefix: Record<string, string> = {
+      heading1: '# ',
+      heading2: '## ',
+      bullet: '- ',
+      quote: '> ',
+      paragraph: '',
+    };
+    lines.push((prefix[kind] ?? '') + text);
+  }
+  ydoc.destroy();
+  return lines.join('\n');
+}
+
+/** 加载整个工作区所有文档，拼接为带标题的长文本（docs 由前端传入，含新建文档） */
+async function loadWorkspaceContext(docsList: { id: string; name: string }[]): Promise<string> {
+  const list = docsList.length > 0 ? docsList : WORKSPACE_DOCS;
+  const parts: string[] = [];
+  for (const doc of list) {
+    const content = await loadDocText(doc.id);
+    parts.push(`## ${doc.name}\n\n${content || '(文档为空)'}`);
+  }
+  return parts.join('\n\n---\n\n');
+}
+
 // ---- AI 聊天接口实现 ----
 async function handleAiChat(req: IncomingMessage, res: ServerResponse) {
   // 读取请求体
@@ -411,7 +664,7 @@ async function handleAiChat(req: IncomingMessage, res: ServerResponse) {
     return;
   }
 
-  const { question, documentContent, roomName } = data;
+  const { question, roomName, docs: docsFromClient, scope } = data;
   if (!question || typeof question !== 'string') {
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'question is required' }));
@@ -425,14 +678,49 @@ async function handleAiChat(req: IncomingMessage, res: ServerResponse) {
     return;
   }
 
-  // 组装系统提示：把文档内容作为上下文
-  const systemPrompt = `你是一个协同文档写作助手。请基于以下文档内容回答用户的问题。
-如果答案不在文档中，请明确说明，并给出你认为有帮助的建议。
+  // 解析范围：doc = 仅当前文档，workspace（默认）= 整个工作区
+  const useScope: 'doc' | 'workspace' = scope === 'doc' ? 'doc' : 'workspace';
+
+  // 构造文档列表
+  const docsList: { id: string; name: string }[] = Array.isArray(docsFromClient)
+    ? docsFromClient.filter((d: any) => d && typeof d.id === 'string' && typeof d.name === 'string')
+    : [];
+
+  const currentDocName = docsList.find((d) => d.id === roomName)?.name
+    ?? WORKSPACE_DOCS.find((d) => d.id === roomName)?.name
+    ?? '当前文档';
+
+  // 根据范围加载上下文
+  let context: string;
+  let scopeLabel: string;
+  if (useScope === 'doc') {
+    context = await loadDocText(roomName);
+    if (!context) context = '（文档为空）';
+    scopeLabel = `当前文档：${currentDocName}`;
+  } else {
+    context = await loadWorkspaceContext(docsList);
+    scopeLabel = `工作区全部 ${docsList.length || 4} 篇文档`;
+  }
+
+  console.log(
+    `[ai] chat scope=${useScope} currentDoc="${currentDocName}" ` +
+    `question="${question.slice(0, 60)}" contextLen=${context.length} chars`
+  );
+
+  // 组装系统提示（根据 scope 调整语气和引用规则）
+  const docModeHint = useScope === 'doc'
+    ? '回答基于当前这篇文档的内容。'
+    : '回答基于工作区中的所有文档内容。引用内容时请注明来自哪篇文档。';
+  const systemPrompt = `你是一个协同文档写作助手。
+${docModeHint} 如果答案不在文档中，请明确说明。
 回答要简洁、结构化，使用 Markdown 格式。
 
-当前文档内容：
+上下文范围：${scopeLabel}
+用户当前正在查看的文档：${currentDocName}
+
+文档内容：
 ---
-${documentContent || '(文档为空)'}
+${context}
 ---`;
 
   try {
