@@ -32,3 +32,6 @@ Thumbs.db
 .vite/
 # LevelDB 运行时数据（服务端持久化）
 server/data/
+
+# 部署脚本（含服务器凭据，禁止提交）
+deploy_ssh.py

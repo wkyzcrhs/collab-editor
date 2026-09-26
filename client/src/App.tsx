@@ -175,7 +175,7 @@ export default function App() {
       </main>
 
       {/* AI 助手面板 */}
-      <AIPanel wsHost={window.location.hostname || 'localhost'} docId={activeDocId} docs={docs} />
+      <AIPanel docId={activeDocId} docs={docs} />
 
       {/* 窄屏遮罩层 */}
       {sidebarOpen && (

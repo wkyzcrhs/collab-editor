@@ -100,9 +100,18 @@ export function useYjsDoc(roomName = 'default') {
     // 每次修复内容重复类 Bug 时升级版本号，让旧缓存整体作废
     const idb = new IndexeddbPersistence(`collab-v6-${roomName}`, ydoc);
 
-    const wsHost = window.location.hostname || 'localhost';
+    // WebSocket 地址：
+    //   开发环境（vite dev）：直连 localhost:8787
+    //   生产环境：走当前域名 + /ws 路径，由 Nginx 反代到后端的 8787
+    //   好处：生产环境自动适配 http/https（ws/wss），不用改端口，也能过 HTTPS
+    const isDev = import.meta.env.DEV;
+    const wsPath = isDev ? '' : (import.meta.env.VITE_WS_PATH ?? '/ws');
+    const wsUrl = isDev
+      ? `ws://${window.location.hostname}:8787`
+      : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${wsPath}`;
+
     const provider = new WebsocketProvider(
-      `ws://${wsHost}:8787`,
+      wsUrl,
       roomName,
       ydoc,
       {

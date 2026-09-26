@@ -7,7 +7,6 @@ interface WorkspaceDoc {
 }
 
 interface AIPanelProps {
-  wsHost: string;
   /** 当前所在的文档 ID，传给服务端让 AI 知道用户在哪篇文档里提问 */
   docId: string;
   /** 工作区全部文档列表（含新建文档），AI 按此列表加载内容做跨文档问答 */
@@ -37,7 +36,7 @@ const QUICK_PROMPTS_BY_SCOPE: Record<AiScope, Array<{ label: string; question: s
   ],
 };
 
-export function AIPanel({ wsHost, docId, docs }: AIPanelProps) {
+export function AIPanel({ docId, docs }: AIPanelProps) {
   // 窄屏（手机/平板）默认收起，宽屏默认展开
   const [open, setOpen] = useState(() => {
     if (typeof window === 'undefined') return true;
@@ -74,7 +73,13 @@ export function AIPanel({ wsHost, docId, docs }: AIPanelProps) {
     abortRef.current = controller;
 
     try {
-      const response = await fetch(`http://${wsHost}:8787/api/ai/chat`, {
+      // AI 接口地址：
+      //   开发环境：直连 :8787（绕过 Vite 代理省配置）
+      //   生产环境：相对路径 /api/ai/chat，由 Nginx 反代到后端
+      const apiBase = import.meta.env.DEV
+        ? `http://${window.location.hostname}:8787`
+        : '';
+      const response = await fetch(`${apiBase}/api/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question, roomName: docId, docs, scope }),
@@ -136,7 +141,7 @@ export function AIPanel({ wsHost, docId, docs }: AIPanelProps) {
       setLoading(false);
       abortRef.current = null;
     }
-  }, [loading, wsHost, docId, docs, scope]);
+  }, [loading, docId, docs, scope]);
 
   const stopGenerate = () => {
     abortRef.current?.abort();
